@@ -21,7 +21,9 @@ namespace uplink
     const char *firmwareVersion;
   };
 
-  // The strings in config must outlive the uplink (string literals from unit_config.h do).
+  // The strings in config must outlive the uplink. mqttHost/mqttUsername/mqttPassword are string literals from
+  // unit_config.h; deviceId/deviceSecret come from provisioning::deviceId()/deviceSecret(), whose static
+  // buffers live for the whole program.
   void begin(const Config &config);
 
   // Samples are only timestamped (and so only buffered) once NTP has set the clock.

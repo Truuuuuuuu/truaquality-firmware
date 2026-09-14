@@ -13,24 +13,54 @@ HTTP API. There is no test suite yet.
 the device to a pond, so moving a unit to a different pond is an admin reassignment on the Devices page, not a
 reflash.
 
+**Every unit runs the same firmware image.** WiFi and device identity are entered per unit, in the field, once
+— see "Field provisioning" below — rather than being compiled in per unit.
+
 **Temperature is a real, verified sensor.** A DS18B20 waterproof probe on GPIO 4 (OneWire), verified
 end-to-end on a real ESP32 unit — readings land in the database and dashboard. **Dissolved oxygen and
 salinity are still stubs**: those modules haven't been chosen yet, so their readers in
 `lib/Sensors/Sensors.cpp` return `NAN` (nothing is uploaded for that parameter) until real drivers replace
 the TODOs. Don't invent part numbers or fake values for those two.
 
-### Per-unit configuration
+### Build-time configuration
 
-Copy `include/unit_config.example.h` to `include/unit_config.h` (gitignored) and fill in:
-- WiFi: `WIFI_SSID`, `WIFI_PASS`.
+Copy `include/unit_config.example.h` to `include/unit_config.h` (gitignored) and fill in — every unit gets the
+same file and the same compiled image now, there's no per-unit build:
 - HiveMQ: `MQTT_HOST`, `MQTT_PORT`, and one MQTT credential (`MQTT_USERNAME` / `MQTT_PASSWORD`) shared by all
   units, created in the HiveMQ console.
-- `DEVICE_ID` / `DEVICE_SECRET`: shown once when an admin registers the unit or rotates its secret.
+- `SETUP_AP_PASSWORD`: the WPA2 password for every unit's setup hotspot (see "Field provisioning" below).
+  Shared by all units, kept in the technician's handbook rather than printed on the enclosure.
+- `REPORT_INTERVAL_MS`.
 
 `src/main.cpp` `#error`s if `unit_config.h` is missing. **Don't rename it to `config.h`:** on macOS's
 case-insensitive filesystem, `#include "config.h"` silently resolves to espMqttClient's `Config.h`, and every
 setting then shows up as undeclared. `MQTT_USE_TLS 0` exists only for a plaintext broker on a
 local network.
+
+### Field provisioning
+
+**WiFi and each unit's `DEVICE_ID`/`DEVICE_SECRET` are no longer compiled in.** A sealed, deployed unit can't
+be plugged into USB for a reflash, so those are entered from a phone instead and kept in flash (NVS).
+`lib/Provisioning/` wraps [WiFiManager](https://github.com/tzapu/WiFiManager) to do this.
+
+- **Unprovisioned** (no saved WiFi, or no saved device identity): the unit opens its own WiFi hotspot,
+  `TruAquality-XXXX` (`XXXX` = the last two bytes of its MAC, also printed in the serial log at boot), secured
+  with `SETUP_AP_PASSWORD`. Joining it from a phone pops up a captive-portal setup page with two screens:
+  "Configure WiFi" (network + password, saved by WiFiManager into the ESP32's own WiFi NVS) and "Setup"
+  (Device ID + Device secret, copied from the Devices page's registration/rotation dialog, saved into this
+  module's own `unit` NVS namespace). The onboard LED (GPIO 2) blinks fast the whole time; the unit takes no
+  readings until both are saved, at which point it restarts.
+- **Provisioned:** the unit joins its saved WiFi and runs exactly as before.
+- **Re-entering setup on a working unit** (pond router replaced, secret rotated on the Devices page, …): hold
+  the BOOT button (GPIO 0) for 5 seconds. The hotspot reopens for 5 minutes; sampling and the MQTT buffer keep
+  running the whole time. **Press it after power-on, not during** — held down while powering up, GPIO 0 instead
+  drops the chip into its ROM download mode. A waterproof button wired from GPIO 0 to GND on the enclosure
+  needs no code change.
+- **Automatic fallback:** if the saved WiFi is unreachable for 10 straight minutes, the hotspot opens on its
+  own for 5 minutes, then closes and goes back to retrying the saved network — repeating for as long as the
+  outage lasts, so a unit nobody can reach in person still has a way back online.
+- A plain `pio run -t upload` leaves NVS (so the saved WiFi/identity) alone. Only `pio run -t erase` wipes it —
+  use that for "fresh unit" testing.
 
 ## Commands
 
@@ -51,9 +81,15 @@ the PlatformIO IDE extension in VS Code.
 - `platformio.ini` defines a single build environment, `[env:nodemcu-32s]`, targeting the `espressif32`
   platform with the Arduino framework. Additional environments (e.g. for a different board or a
   native/test environment) would be added here as new `[env:...]` sections. `lib_deps`: ArduinoJson v7,
-  espMqttClient, and (for the DS18B20) `paulstoffregen/OneWire` + `milesburton/DallasTemperature`.
-- `src/main.cpp` is the firmware entry point. It reads the sensors on each interval (only after NTP has synced,
-  so every sample has a real timestamp) and calls `uplink::loop()` on every pass.
+  espMqttClient, `tzapu/WiFiManager` (captive-portal provisioning), and (for the DS18B20)
+  `paulstoffregen/OneWire` + `milesburton/DallasTemperature`.
+- `src/main.cpp` is the firmware entry point. `provisioning::loop()` runs on every pass regardless of
+  provisioning state; sensor reads and `uplink::loop()` only start once `provisioning::isProvisioned()` is
+  true. It reads the sensors on each interval (only after NTP has synced, so every sample has a real
+  timestamp).
+- `lib/Provisioning/`: see "Field provisioning" above. Owns the WiFiManager instance, the BOOT-button and
+  WiFi-outage triggers for reopening the setup hotspot, and the `unit` NVS namespace holding `device_id` /
+  `device_secret`.
 - `lib/Sensors/`: `sensors::readAll()` returns a `SensorSample` (temperature °C, dissolved oxygen mg/L,
   salinity ppt).
   - **Temperature:** real DS18B20 driver, OneWire bus on GPIO 4. The probe's data line needs a ~4.7kΩ
