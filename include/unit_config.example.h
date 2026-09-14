@@ -19,4 +19,4 @@
 #define DEVICE_SECRET "paste-the-device-secret"
 
 // How often to take a reading. The dashboard marks a pond stale after 5 minutes of silence.
-#define REPORT_INTERVAL_MS 60000UL
+#define REPORT_INTERVAL_MS 30000UL
