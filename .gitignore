@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Per-unit WiFi, MQTT and device credentials — copy include/unit_config.example.h
+include/unit_config.h
