@@ -1,13 +1,14 @@
 #include "Uplink.h"
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <espMqttClient.h>
 #include <mbedtls/md.h>
+#include <string>
 #include <time.h>
 
 #include "RootCa.h"
+#include "WireFormat.h"
 
 namespace
 {
@@ -31,7 +32,7 @@ namespace
   size_t count = 0;
 
   uplink::Config config;
-  String topic;
+  std::string topic;
 
   // Both are constructed so TLS can be chosen at runtime; only one ever connects.
   espMqttClientSecure secureClient(espMqttClientTypes::UseInternalTask::NO);
@@ -44,25 +45,12 @@ namespace
   unsigned long inFlightSentAtMs = 0;
   unsigned long lastConnectAttemptMs = 0;
 
-  void addValue(JsonObject values, const char *parameter, float value)
+  // Lowercase hex HMAC-SHA256 of `<topic>\n<body>`, matching the backend's deviceMessages.ts. The bytes
+  // being signed come from wire::, which the native suite pins against the backend's golden vectors; the
+  // only thing left here is the mbedTLS call, because mbedTLS has no host build.
+  bool signBody(const std::string &body, char hexOut[65])
   {
-    if (!isnan(value))
-    {
-      values[parameter] = value;
-    }
-  }
-
-  void formatIso8601(time_t epoch, char *out, size_t size)
-  {
-    struct tm utc;
-    gmtime_r(&epoch, &utc);
-    strftime(out, size, "%Y-%m-%dT%H:%M:%SZ", &utc);
-  }
-
-  // Lowercase hex HMAC-SHA256 of `<topic>\n<body>`, matching the backend's deviceMessages.ts.
-  bool signBody(const String &body, char hexOut[65])
-  {
-    String signedInput = topic + "\n" + body;
+    std::string signedInput = wire::signedInput(topic, body);
     uint8_t mac[32];
     const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     int result = mbedtls_md_hmac(
@@ -74,10 +62,7 @@ namespace
     {
       return false;
     }
-    for (size_t i = 0; i < sizeof(mac); i++)
-    {
-      snprintf(hexOut + i * 2, 3, "%02x", mac[i]);
-    }
+    wire::toHexLower(mac, sizeof(mac), hexOut);
     return true;
   }
 
@@ -85,21 +70,13 @@ namespace
   {
     size_t batchSize = count < MAX_SAMPLES_PER_MESSAGE ? count : MAX_SAMPLES_PER_MESSAGE;
 
-    JsonDocument doc;
-    doc["firmwareVersion"] = config.firmwareVersion;
-    JsonArray samples = doc["samples"].to<JsonArray>();
-    char timestamp[25];
+    wire::Stamped batch[MAX_SAMPLES_PER_MESSAGE];
     for (size_t i = 0; i < batchSize; i++)
     {
       const BufferedSample &entry = buffer[(head + i) % BUFFER_CAPACITY];
-      JsonObject item = samples.add<JsonObject>();
-      formatIso8601(entry.recordedAt, timestamp, sizeof(timestamp));
-      item["recordedAt"] = timestamp;
-      JsonObject values = item["values"].to<JsonObject>();
-      addValue(values, "temperature", entry.sample.temperature);
+      batch[i] = wire::Stamped{entry.recordedAt, entry.sample};
     }
-    String body;
-    serializeJson(doc, body);
+    std::string body = wire::buildBody(config.firmwareVersion, batch, batchSize);
 
     char signature[65];
     if (!signBody(body, signature))
@@ -107,7 +84,7 @@ namespace
       Serial.println("[uplink] signing failed");
       return;
     }
-    String payload = String("v1.") + signature + "." + body;
+    std::string payload = wire::frame(signature, body);
 
     uint16_t packetId = client->publish(topic.c_str(), 1, false, payload.c_str());
     if (packetId == 0)
@@ -126,7 +103,7 @@ namespace uplink
   void begin(const Config &newConfig)
   {
     config = newConfig;
-    topic = String("truaquality/v1/devices/") + config.deviceId + "/readings";
+    topic = wire::readingsTopic(config.deviceId);
 
     if (config.useTls)
     {
