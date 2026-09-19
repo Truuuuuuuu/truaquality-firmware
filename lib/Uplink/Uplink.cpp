@@ -97,8 +97,6 @@ namespace
       item["recordedAt"] = timestamp;
       JsonObject values = item["values"].to<JsonObject>();
       addValue(values, "temperature", entry.sample.temperature);
-      addValue(values, "dissolvedOxygen", entry.sample.dissolvedOxygen);
-      addValue(values, "salinity", entry.sample.salinity);
     }
     String body;
     serializeJson(doc, body);

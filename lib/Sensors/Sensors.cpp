@@ -25,18 +25,6 @@ namespace
     }
     return celsius;
   }
-
-  float readDissolvedOxygen()
-  {
-    // TODO: dissolved oxygen probe driver (apply temperature compensation if the module needs it).
-    return NAN;
-  }
-
-  float readSalinity()
-  {
-    // TODO: conductivity/salinity probe driver.
-    return NAN;
-  }
 }
 
 namespace sensors
@@ -52,6 +40,6 @@ namespace sensors
 
   SensorSample readAll()
   {
-    return SensorSample{readTemperature(), readDissolvedOxygen(), readSalinity()};
+    return SensorSample{readTemperature()};
   }
 }

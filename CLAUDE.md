@@ -17,10 +17,11 @@ reflash.
 — see "Field provisioning" below — rather than being compiled in per unit.
 
 **Temperature is a real, verified sensor.** A DS18B20 waterproof probe on GPIO 4 (OneWire), verified
-end-to-end on a real ESP32 unit — readings land in the database and dashboard. **Dissolved oxygen and
-salinity are still stubs**: those modules haven't been chosen yet, so their readers in
-`lib/Sensors/Sensors.cpp` return `NAN` (nothing is uploaded for that parameter) until real drivers replace
-the TODOs. Don't invent part numbers or fake values for those two.
+end-to-end on a real ESP32 unit — readings land in the database and dashboard. It is currently the only
+parameter; **turbidity is the next sensor to be added** (module not chosen yet — don't invent a part number
+or fake values). Adding a parameter means a field on `SensorSample`, a reader in `lib/Sensors/Sensors.cpp`,
+an `addValue` line in `lib/Uplink/Uplink.cpp`, and the same id in the backend's `PARAMETER_BOUNDS` and the
+frontend's `PARAMETERS`.
 
 ### Build-time configuration
 
@@ -90,12 +91,10 @@ the PlatformIO IDE extension in VS Code.
 - `lib/Provisioning/`: see "Field provisioning" above. Owns the WiFiManager instance, the BOOT-button and
   WiFi-outage triggers for reopening the setup hotspot, and the `unit` NVS namespace holding `device_id` /
   `device_secret`.
-- `lib/Sensors/`: `sensors::readAll()` returns a `SensorSample` (temperature °C, dissolved oxygen mg/L,
-  salinity ppt).
+- `lib/Sensors/`: `sensors::readAll()` returns a `SensorSample` (temperature °C).
   - **Temperature:** real DS18B20 driver, OneWire bus on GPIO 4. The probe's data line needs a ~4.7kΩ
     pull-up to 3V3 if the module doesn't already have one built in. `sensors::begin()` logs a warning if no
     DS18B20 is found on the bus at boot (check wiring/pull-up if that happens).
-  - **Dissolved oxygen, salinity:** still stubbed, return `NAN`.
   - `NAN` for any parameter means "no reading" — it's dropped from the upload rather than sent as a fake `0`.
 - `lib/Uplink/`: a 120-sample ring buffer published with espMqttClient (`UseInternalTask::NO`, so
   `uplink::loop()` drives it).
@@ -107,7 +106,7 @@ the PlatformIO IDE extension in VS Code.
     `v1.<lowercase hex HMAC-SHA256(DEVICE_SECRET, "<topic>\n<body>")>.<body>`.
     - Signed because HiveMQ's free tier can't limit an MQTT login to its own topics.
     - The body is `{"firmwareVersion", "samples": [{"recordedAt": ISO-8601 UTC, "values": {...}}]}`.
-    - JSON parameter keys (`temperature`, `dissolvedOxygen`, `salinity`) must match the backend's
+    - JSON parameter keys (currently just `temperature`) must match the backend's
       `PARAMETER_BOUNDS`.
   - **TLS:** verified against ISRG Root X1 (`lib/Uplink/RootCa.h`, Let's Encrypt, valid until 2035), the root
     of HiveMQ Cloud's certificates.

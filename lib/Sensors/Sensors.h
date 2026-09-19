@@ -4,9 +4,7 @@
 // left out of the upload rather than sent as zeros.
 struct SensorSample
 {
-  float temperature;     // °C
-  float dissolvedOxygen; // mg/L
-  float salinity;        // ppt
+  float temperature; // °C
 };
 
 namespace sensors
