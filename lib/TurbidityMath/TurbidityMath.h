@@ -214,6 +214,12 @@ namespace turbidity
     //    with step 5 at the boundary: at vEff == VENDOR_ZERO_V it evaluates to exactly 0, so the two
     //    branches meet instead of stepping by the coefficients' residue.
     const float ntu = CURVE_A * vEff * vEff + CURVE_B * vEff + CURVE_C - CURVE_ZERO_OFFSET_NTU;
-    return roundNtu(std::clamp(ntu, 0.0f, NTU_CEILING));
+    // std::min/std::max rather than std::clamp, which is C++17: [env:native] builds with -std=gnu++17 but
+    // the ESP32 Arduino core compiles at gnu++11, and this header is compiled by BOTH once Sensors.cpp and
+    // Provisioning.cpp include it. The nesting is the same value for every input, NAN included. Reaching for
+    // std::clamp here again would build green on the host and fail the board with "'clamp' is not a member
+    // of 'std'"; raising the board's standard to fix one call would recompile the whole Arduino core,
+    // WiFiManager and espMqttClient for no gain.
+    return roundNtu(std::min(std::max(ntu, 0.0f), NTU_CEILING));
   }
 }

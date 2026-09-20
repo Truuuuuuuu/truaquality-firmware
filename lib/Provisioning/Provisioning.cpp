@@ -1,5 +1,7 @@
 #include "Provisioning.h"
 
+#include "TurbidityMath.h"
+
 #include <Arduino.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -31,6 +33,11 @@ namespace
   char deviceIdBuf[DEVICE_ID_LEN + 1] = {0};
   char deviceSecretBuf[DEVICE_SECRET_LEN + 1] = {0};
   bool identityPresent = false;
+
+  // The unit's clear-water reference in sensor-side millivolts, cached from NVS for the whole run. The
+  // calibration lives here rather than in lib/Sensors because this module already owns the "unit" namespace;
+  // keeping every Preferences call in one file is what lets Sensors stay a pure hardware reader.
+  uint16_t turbidityClearMv = 0;
 
   char apName[24] = {0};
   char macInfoHtml[64] = {0};
@@ -102,6 +109,18 @@ namespace
     deviceSecretBuf[sizeof(deviceSecretBuf) - 1] = '\0';
 
     identityPresent = isValidDeviceId(deviceIdBuf) && isValidDeviceSecret(deviceSecretBuf);
+  }
+
+  // Same shape as loadIdentity(): open the shared "unit" namespace read-only, pull the value, close it at
+  // once, cache it for the run. 0 is the sentinel for "never calibrated" - it is what NVS hands back when the
+  // key was never written, and it is the one value no real clear-water reading can be. The key name is
+  // deliberately 13 characters: NVS caps key names at 15, and a longer, more readable name would be
+  // truncated silently and stop matching the key Phase 5's portal writes.
+  void loadTurbidityCalibration()
+  {
+    prefs.begin("unit", true);
+    turbidityClearMv = prefs.getUShort("turb_clear_mv", 0);
+    prefs.end();
   }
 
   // Fires when the "Setup" page is saved. Runs the same validation the portal's HTML `pattern` attributes
@@ -252,6 +271,22 @@ namespace provisioning
     WiFi.mode(WIFI_STA);
 
     loadIdentity();
+    loadTurbidityCalibration();
+
+    // D-17: exactly one line, and only when the calibration is unusable. An uncalibrated unit and a unit with
+    // a dead turbidity sensor look identical from the dashboard - both report temperature and no turbidity -
+    // so the boot log is the only place a technician can tell the two apart, and it has to name which of the
+    // two unusable cases this is.
+    if (turbidityClearMv == 0)
+    {
+      Serial.println("[provisioning] turbidity uncalibrated: no clear-water value stored");
+    }
+    else if (!turbidity::isPlausibleClearWaterMv(turbidityClearMv))
+    {
+      Serial.printf("[provisioning] turbidity uncalibrated: stored clear-water value %u mV is outside the "
+                    "plausible window\n",
+                    static_cast<unsigned>(turbidityClearMv));
+    }
 
     uint8_t mac[6];
     WiFi.macAddress(mac);
@@ -284,6 +319,33 @@ namespace provisioning
   const char *deviceSecret()
   {
     return deviceSecretBuf;
+  }
+
+  uint16_t turbidityClearWaterMv()
+  {
+    return turbidityClearMv;
+  }
+
+  bool storeTurbidityClearWaterMv(uint16_t clearWaterMv)
+  {
+    // Validated before the write, not after the read alone: this function is the only door into the key, so
+    // refusing here is what stops a mistyped bench command or a Phase 5 portal submission from persisting a
+    // reference that would silently rescale every later reading. The loader re-validates anyway, because
+    // flash written by an older build is not this function's output.
+    if (!turbidity::isPlausibleClearWaterMv(clearWaterMv))
+    {
+      Serial.printf("[provisioning] rejected: clear-water calibration %u mV is implausible for clear water\n",
+                    static_cast<unsigned>(clearWaterMv));
+      return false;
+    }
+
+    prefs.begin("unit", false);
+    prefs.putUShort("turb_clear_mv", clearWaterMv);
+    prefs.end();
+
+    turbidityClearMv = clearWaterMv;
+    Serial.printf("[provisioning] turbidity calibration saved: %u mV\n", static_cast<unsigned>(clearWaterMv));
+    return true;
   }
 
   bool portalActive()
