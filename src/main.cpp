@@ -58,6 +58,14 @@ void setup()
   provisioning::begin(provisioning::Config{
       SETUP_AP_PASSWORD,
   });
+
+  // After provisioning::begin(), never before it: Provisioning owns the "unit" NVS namespace and only reads
+  // turb_clear_mv in there, so the value does not exist yet while sensors::begin() runs. Handing it across
+  // here is also what keeps Sensors free of any NVS call of its own — it stays a hardware reader that is
+  // told its reference rather than one that goes looking for it, and this file opens no NVS namespace
+  // either. Moving this line above provisioning::begin() would
+  // compile, run and log nothing, and every unit in the field would silently report no turbidity at all.
+  sensors::setTurbidityCalibration(provisioning::turbidityClearWaterMv());
 }
 
 void loop()
