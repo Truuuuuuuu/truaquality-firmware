@@ -339,9 +339,21 @@ namespace provisioning
       return false;
     }
 
-    prefs.begin("unit", false);
-    prefs.putUShort("turb_clear_mv", clearWaterMv);
+    // Both results are checked because a "saved" line the technician trusts must mean it survives a reboot:
+    // putUShort returns 0 on a full or failing NVS, and an unchecked write would leave the unit calibrated in
+    // RAM only, silently reverting to "no turbidity" at the next power cycle.
+    if (!prefs.begin("unit", false))
+    {
+      Serial.println("[provisioning] calibration NOT saved: could not open NVS");
+      return false;
+    }
+    const size_t written = prefs.putUShort("turb_clear_mv", clearWaterMv);
     prefs.end();
+    if (written != sizeof(uint16_t))
+    {
+      Serial.println("[provisioning] calibration NOT saved: NVS write failed");
+      return false;
+    }
 
     turbidityClearMv = clearWaterMv;
     Serial.printf("[provisioning] turbidity calibration saved: %u mV\n", static_cast<unsigned>(clearWaterMv));
