@@ -51,7 +51,11 @@ namespace wire
       formatIso8601(samples[i].recordedAt, timestamp, sizeof(timestamp));
       item["recordedAt"] = timestamp;
       JsonObject values = item["values"].to<JsonObject>();
+      // The order of these two calls IS the JSON key order, and the JSON key order is signed bytes: swapping
+      // them changes every signature the backend verifies. It must match the object-literal order in
+      // backend/scripts/generate-signing-vectors.ts, which is where the golden vectors come from.
       addValue(values, "temperature", samples[i].sample.temperature);
+      addValue(values, "turbidity", samples[i].sample.turbidity);
     }
     std::string body;
     serializeJson(doc, body);

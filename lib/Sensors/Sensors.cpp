@@ -40,6 +40,11 @@ namespace sensors
 
   SensorSample readAll()
   {
-    return SensorSample{readTemperature()};
+    // The NAN is written out deliberately, not left to the aggregate. A positional initializer that names
+    // only temperature value-initializes turbidity to 0.0f, and 0.0f is the one value that must never reach
+    // the wire: it is a perfectly plausible "crystal clear water" reading, so it would be stored and charted
+    // as a real measurement instead of being omitted. NAN is what "no reading" looks like here until the ADC
+    // reader lands in the next plan.
+    return SensorSample{readTemperature(), NAN};
   }
 }

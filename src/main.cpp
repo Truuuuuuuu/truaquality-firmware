@@ -11,7 +11,11 @@
 #include "Sensors.h"
 #include "Uplink.h"
 
-static const char *FIRMWARE_VERSION = "0.3.0";
+// Serialized into every signed body, so a bump here invalidates every golden signature at once: it only ever
+// moves together with regenerated vectors (backend `npm run generate:signing-vectors`, then
+// `node scripts/sync-golden-vectors.mjs`). 0.4.0 is the first version that can report turbidity, which is how
+// Device.firmwareVersion tells the backend which units can.
+static const char *FIRMWARE_VERSION = "0.4.0";
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 
 static unsigned long lastReadingMs = 0;

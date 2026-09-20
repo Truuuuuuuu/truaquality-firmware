@@ -15,6 +15,7 @@
 struct SensorSample
 {
   float temperature; // °C
+  float turbidity;   // NTU
 };
 
 namespace sensors
