@@ -63,7 +63,7 @@ void test_fixture_is_dummy_secrets(void)
   // DEVICE_SECRET in to debug a mismatch, this fails loudly instead of the secret shipping quietly in git
   // history. The count check also catches a truncated or half-regenerated header, which would otherwise let
   // test_golden_signatures pass vacuously.
-  TEST_ASSERT_EQUAL_UINT(3, GOLDEN_VECTOR_COUNT);
+  TEST_ASSERT_EQUAL_UINT(6, GOLDEN_VECTOR_COUNT);
   for (unsigned i = 0; i < GOLDEN_VECTOR_COUNT; i++)
   {
     TEST_ASSERT_TRUE(strstr(GOLDEN_VECTORS[i].secret, "not-real") != nullptr);
