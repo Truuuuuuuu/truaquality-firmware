@@ -18,8 +18,36 @@ struct SensorSample
   float turbidity;   // NTU
 };
 
+// The intermediate numbers behind one turbidity acquisition, for the bench CSV and the serial calibration
+// readout. Plain floats and nothing else: this is a mirror of turbidity::Burst plus two derived values, and
+// it is spelled out by hand rather than embedding that struct precisely because including TurbidityMath.h
+// here would drag a second library into every host build that only wanted SensorSample.
+struct TurbidityDiagnostics
+{
+  float rawMeanMv;     // burst mean before trimming — shows what the trim threw away
+  float filteredPinMv; // trimmed mean at the pin, the value the NTU conversion is fed
+  float spreadMv;      // highest minus lowest of the kept window, i.e. how steady the burst was
+  float sensorMv;      // filteredPinMv scaled back up through the divider: what the sensor itself put out
+  float ntu;           // what that same burst converted to, NAN when it faulted or the unit is uncalibrated
+};
+
 namespace sensors
 {
   void begin();
   SensorSample readAll();
+
+  // Hands the unit's stored clear-water reference in; 0 means uncalibrated, which makes every turbidity read
+  // NAN. Spelled `unsigned short` rather than uint16_t only because of this header's zero-include rule above
+  // — it is the same 16-bit type on both toolchains, and callers pass provisioning::turbidityClearWaterMv()
+  // straight in. Provisioning owns storage and validation; this just receives the result.
+  void setTurbidityCalibration(unsigned short clearWaterMv);
+
+  // One burst returned as SENSOR-side millivolts — the raw number a technician reads on the bench and the
+  // number a clear-water capture stores. NAN on a faulted pin, and deliberately NOT gated on calibration,
+  // since this is what produces a calibration in the first place.
+  float readTurbidityMillivolts();
+
+  // The intermediates from whichever of readAll() / readTurbidityMillivolts() ran most recently. All NAN
+  // before the first read.
+  TurbidityDiagnostics lastTurbidityDiagnostics();
 }
