@@ -11,10 +11,11 @@ namespace
 {
   void addValue(JsonObject values, const char *parameter, float value)
   {
-    // NAN means "no reading". Omitting the key is not the same as sending null: ARDUINOJSON_ENABLE_NAN is 0,
-    // so a NAN that got past this guard would serialize as null, which the backend silently accepts and
-    // drops — the payloads would grow and nothing would look broken.
-    if (!std::isnan(value))
+    // NAN means "no reading". Omitting the key is not the same as sending null: ARDUINOJSON_ENABLE_NAN and
+    // ARDUINOJSON_ENABLE_INFINITY are both 0, so a NAN or +/-infinity that got past this guard would
+    // serialize as null, which the backend silently accepts and drops — the payloads would grow and nothing
+    // would look broken. isfinite covers both; a future driver that divides by zero must not slip through.
+    if (std::isfinite(value))
     {
       values[parameter] = value;
     }

@@ -145,6 +145,15 @@ void test_nan_parameter_is_omitted_not_null(void)
       wire::buildBody(FIRMWARE_VERSION, batch, 1).c_str());
 }
 
+void test_infinite_parameter_is_omitted_not_null(void)
+{
+  // ARDUINOJSON_ENABLE_INFINITY is 0 too, so +/-infinity would serialize as null exactly like NAN.
+  wire::Stamped batch[] = {{T0, {INFINITY, -INFINITY}}};
+  TEST_ASSERT_EQUAL_STRING(
+      R"RAW({"firmwareVersion":"0.4.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{}}]})RAW",
+      wire::buildBody(FIRMWARE_VERSION, batch, 1).c_str());
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -162,5 +171,6 @@ int main(int argc, char **argv)
   RUN_TEST(test_hex_is_lowercase);
   RUN_TEST(test_frame_matches_vector_payload);
   RUN_TEST(test_nan_parameter_is_omitted_not_null);
+  RUN_TEST(test_infinite_parameter_is_omitted_not_null);
   return UNITY_END();
 }
