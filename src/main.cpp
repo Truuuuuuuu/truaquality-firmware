@@ -22,6 +22,10 @@ static unsigned long lastReadingMs = 0;
 static bool readOnce = false;
 static bool uplinkStarted = false;
 
+#if TURBIDITY_BENCH
+static void benchPump();
+#endif
+
 static void ensureWiFi()
 {
   // The captive portal runs its own AP + WiFi.mode(); touching either here would tear it down.
@@ -39,6 +43,12 @@ static void ensureWiFi()
   unsigned long startedMs = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startedMs < WIFI_CONNECT_TIMEOUT_MS)
   {
+#if TURBIDITY_BENCH
+    // This wait can last 15 s per uplink cycle on a provisioned unit with no reachable network, which is the
+    // normal state of an unplugged protocol run. Pumping the bench logger here is what keeps the CSV at its own
+    // 1 s cadence instead of losing about half of every cycle. The 250 ms delay bounds the granularity.
+    benchPump();
+#endif
     delay(250);
   }
   if (WiFi.status() == WL_CONNECTED)
@@ -237,6 +247,19 @@ static void benchLogSample()
       diagnostics.ntu,
       provisioning::turbidityClearWaterMv());
 }
+
+// The single place the CSV cadence is decided, shared by loop() and by ensureWiFi()'s connect wait so the two
+// callers cannot drift apart.
+static void benchPump()
+{
+  benchPollSerial();
+  if (!benchSampledOnce || millis() - lastBenchSampleMs >= BENCH_SAMPLE_INTERVAL_MS)
+  {
+    benchSampledOnce = true;
+    lastBenchSampleMs = millis();
+    benchLogSample();
+  }
+}
 #endif
 
 void setup()
@@ -268,13 +291,7 @@ void loop()
   // especially - have no reason to be online, and a bench unit that is unprovisioned, off WiFi or still
   // waiting on NTP must keep logging. The sampling branch further down is untouched: this unit still
   // publishes on the normal schedule.
-  benchPollSerial();
-  if (!benchSampledOnce || millis() - lastBenchSampleMs >= BENCH_SAMPLE_INTERVAL_MS)
-  {
-    benchSampledOnce = true;
-    lastBenchSampleMs = millis();
-    benchLogSample();
-  }
+  benchPump();
 #endif
 
   provisioning::loop(WiFi.status() == WL_CONNECTED);
