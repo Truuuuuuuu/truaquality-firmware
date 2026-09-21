@@ -38,10 +38,18 @@ namespace wire
     strftime(out, size, "%Y-%m-%dT%H:%M:%SZ", &utc);
   }
 
-  std::string buildBody(const char *firmwareVersion, const Stamped *samples, size_t count)
+  std::string buildBody(const char *firmwareVersion, const char *wifiSsid, const Stamped *samples, size_t count)
   {
     JsonDocument doc;
+    // The order of these assignments IS the JSON key order, and the JSON key order is signed bytes: it must
+    // match backend/scripts/generate-signing-vectors.ts (firmwareVersion, wifiSsid, samples). An empty or
+    // missing SSID is omitted, never sent as "". ArduinoJson escapes quotes, backslashes and control
+    // characters and leaves UTF-8 raw, exactly like the backend's JSON.stringify.
     doc["firmwareVersion"] = firmwareVersion;
+    if (wifiSsid != nullptr && wifiSsid[0] != '\0')
+    {
+      doc["wifiSsid"] = wifiSsid;
+    }
     JsonArray array = doc["samples"].to<JsonArray>();
     // Non-const char[] on purpose: ArduinoJson copies it. A const char* would be stored by reference and
     // every sample in the batch would end up carrying the last timestamp.

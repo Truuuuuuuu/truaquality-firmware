@@ -76,7 +76,10 @@ namespace
       const BufferedSample &entry = buffer[(head + i) % BUFFER_CAPACITY];
       batch[i] = wire::Stamped{entry.recordedAt, entry.sample};
     }
-    std::string body = wire::buildBody(config.firmwareVersion, batch, batchSize);
+    // Read at publish time (per message, not per sample): the network can change between buffering a reading
+    // and flushing it, and the backend only wants the last known one. The String must outlive buildBody.
+    String ssid = WiFi.SSID();
+    std::string body = wire::buildBody(config.firmwareVersion, ssid.c_str(), batch, batchSize);
 
     char signature[65];
     if (!signBody(body, signature))

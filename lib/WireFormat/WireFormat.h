@@ -27,8 +27,9 @@ namespace wire
   // Whole-second UTC, no ".000Z" — the backend fixture is generated that way on purpose.
   void formatIso8601(std::time_t epoch, char *out, size_t size);
 
-  // The signed JSON body. A NAN parameter is omitted rather than sent as a zero or a null.
-  std::string buildBody(const char *firmwareVersion, const Stamped *samples, size_t count);
+  // The signed JSON body. A NAN parameter is omitted rather than sent as a zero or a null. wifiSsid is a plain
+  // C string (this library stays Arduino-free); nullptr or "" omits the key entirely.
+  std::string buildBody(const char *firmwareVersion, const char *wifiSsid, const Stamped *samples, size_t count);
 
   // The bytes the HMAC covers: "<topic>\n<body>". Must match the backend's hmacHex().
   std::string signedInput(const std::string &topic, const std::string &body);

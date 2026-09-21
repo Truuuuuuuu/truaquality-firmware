@@ -103,8 +103,10 @@ the PlatformIO IDE extension in VS Code.
 - Sync the golden vectors from the backend: `node scripts/sync-golden-vectors.mjs`
 - Check the golden vectors for drift: `node scripts/sync-golden-vectors.mjs --check`
 
-**Always pass `-e` to `pio run`.** Now that `[env:native]` exists, a bare `pio run` also tries to build the
-host environment from `src/` — which is Arduino code — and fails.
+**Always pass `-e` to `pio run`.** `platformio.ini` sets `default_envs = nodemcu-32s`, so a bare `pio run` and
+the VS Code upload arrow now target the real firmware only. Before that default existed they ran every
+environment: `[env:native]` fails (it can't build the Arduino `src/`), and `[env:nodemcu-32s-bench]` would try
+to flash the calibration image. Still name `native` or `nodemcu-32s-bench` explicitly with `-e` when you want them.
 
 **The board-free compile check needs both flags.** `--without-uploading` *alone* builds and then hangs
 indefinitely on serial-port detection when no board is attached. With `--without-testing` as well, it prints
@@ -178,7 +180,8 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     `v1.<lowercase hex HMAC-SHA256(DEVICE_SECRET, "<topic>\n<body>")>.<body>`, assembled by `wire::` and
     signed by `signBody()` in `Uplink.cpp`.
     - Signed because HiveMQ's free tier can't limit an MQTT login to its own topics.
-    - The body is `{"firmwareVersion", "samples": [{"recordedAt": ISO-8601 UTC, "values": {...}}]}`.
+    - The body is `{"firmwareVersion", "wifiSsid"?, "samples": [{"recordedAt": ISO-8601 UTC, "values": {...}}]}`;
+    `wifiSsid` (`WiFi.SSID()` at publish time, since 0.5.0) is omitted when empty.
     - JSON parameter keys (`temperature`, and `turbidity` when the unit has a reading for it) must match the
       backend's `PARAMETER_BOUNDS`.
   - **TLS:** verified against ISRG Root X1 (`lib/Uplink/RootCa.h`, Let's Encrypt, valid until 2035), the root
