@@ -66,7 +66,11 @@ namespace turbidity
   // outputs 4.1 +/- 0.3 V" at 10-50 C. A value outside it, or the 0 that NVS returns when the unit was
   // never calibrated, means the calibration cannot be trusted — not that the water is turbid. The bench
   // narrows this once real clones have been read in clean water.
-  constexpr uint16_t CLEAR_WATER_MIN_MV = 3800;
+  // The minimum is lowered from the datasheet's 3800 to 3000 for the 03-06 session: the bench rig runs the
+  // module from the ESP32's 5V pin (4.57-4.69 V over USB, after the board's diode), and clear water read
+  // 3310-3433 mV sensor-side on the meter and on `cal show`, so 3800 refused a genuine clear-water capture.
+  // Still PROVISIONAL: 03-06 replaces both bounds with the spread measured across the session.
+  constexpr uint16_t CLEAR_WATER_MIN_MV = 3000;
   constexpr uint16_t CLEAR_WATER_MAX_MV = 4400;
 
   // PROVISIONAL (D-03). A normalized voltage more than this fraction above the reference means the 5 V rail
