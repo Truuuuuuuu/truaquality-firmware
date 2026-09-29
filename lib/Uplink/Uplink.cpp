@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_system.h>
+#include <esp_timer.h>
 #include <espMqttClient.h>
 #include <mbedtls/md.h>
 #include <string>
@@ -45,6 +47,42 @@ namespace
   unsigned long inFlightSentAtMs = 0;
   unsigned long lastConnectAttemptMs = 0;
 
+  // Why this boot happened, read once in begin(): esp_reset_reason() doesn't change during a run, and the
+  // backend compares uptimeS between messages to log a REBOOT with this as its reason.
+  wire::ResetReason resetReason = wire::ResetReason::Unknown;
+
+  wire::ResetReason mapResetReason(esp_reset_reason_t reason)
+  {
+    switch (reason)
+    {
+    case ESP_RST_POWERON:
+      return wire::ResetReason::PowerOn;
+    case ESP_RST_SW:
+      return wire::ResetReason::Software;
+    case ESP_RST_PANIC:
+      return wire::ResetReason::Panic;
+    case ESP_RST_INT_WDT:
+      return wire::ResetReason::IntWdt;
+    case ESP_RST_TASK_WDT:
+      return wire::ResetReason::TaskWdt;
+    case ESP_RST_WDT:
+      return wire::ResetReason::Wdt;
+    case ESP_RST_BROWNOUT:
+      return wire::ResetReason::Brownout;
+    case ESP_RST_DEEPSLEEP:
+      return wire::ResetReason::DeepSleep;
+    case ESP_RST_EXT:
+      return wire::ResetReason::External;
+    // ESP_RST_UNKNOWN, ESP_RST_SDIO and any reason a newer ESP-IDF adds: the backend only knows its own
+    // token list, and an unknown token would reject the whole message.
+    default:
+      return wire::ResetReason::Unknown;
+    }
+  }
+
+  // Published payload: `v1.<sig>.<body>`, where since 0.6.0 the body is
+  // {"firmwareVersion","wifiSsid"?,"diag":{"rssi","uptimeS","resetReason","freeHeap","queued"},
+  //  "sensors":{"temperature","turbidity"},"samples":[...]} — key order is signed bytes, owned by wire::.
   // Lowercase hex HMAC-SHA256 of `<topic>\n<body>`, matching the backend's deviceMessages.ts. The bytes
   // being signed come from wire::, which the native suite pins against the backend's golden vectors; the
   // only thing left here is the mbedTLS call, because mbedTLS has no host build.
@@ -79,7 +117,17 @@ namespace
     // Read at publish time (per message, not per sample): the network can change between buffering a reading
     // and flushing it, and the backend only wants the last known one. The String must outlive buildBody.
     String ssid = WiFi.SSID();
-    std::string body = wire::buildBody(config.firmwareVersion, ssid.c_str(), batch, batchSize);
+    // Also per message, and passed in raw: wire:: clamps every number into the backend's range (natively
+    // tested). uptimeS comes from the 64-bit esp_timer, not millis(): millis() is 32-bit and wraps after
+    // ~49.7 days, and a falling uptime is exactly what the backend reads as a REBOOT.
+    const wire::Diagnostics diagnostics{
+        static_cast<int64_t>(WiFi.RSSI()),
+        static_cast<int64_t>(esp_timer_get_time() / 1000000),
+        resetReason,
+        static_cast<int64_t>(ESP.getFreeHeap()),
+        static_cast<int64_t>(count),
+    };
+    std::string body = wire::buildBody(config.firmwareVersion, ssid.c_str(), &diagnostics, true, batch, batchSize);
 
     char signature[65];
     if (!signBody(body, signature))
@@ -107,6 +155,7 @@ namespace uplink
   {
     config = newConfig;
     topic = wire::readingsTopic(config.deviceId);
+    resetReason = mapResetReason(esp_reset_reason());
 
     if (config.useTls)
     {
@@ -153,6 +202,11 @@ namespace uplink
 
     // UTC; the backend and dashboard handle display time zones.
     configTime(0, 0, "pool.ntp.org", "time.google.com");
+  }
+
+  size_t queuedSamples()
+  {
+    return count;
   }
 
   bool timeSynced()

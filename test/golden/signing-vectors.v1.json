@@ -8,63 +8,72 @@
       "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
       "deviceId": "00000000-0000-4000-8000-000000000001",
       "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
-      "body": "{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}",
-      "signature": "b1a776ca532c46a3bc2538ee73d5d18aea3c0dbd85a126fdc682bc648b3c4a80",
-      "payload": "v1.b1a776ca532c46a3bc2538ee73d5d18aea3c0dbd85a126fdc682bc648b3c4a80.{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}"
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}",
+      "signature": "b537560d7b8e2fd2f7ff0f52b9b86ce9ee0f413f9db798ade49d7fedd395b491",
+      "payload": "v1.b537560d7b8e2fd2f7ff0f52b9b86ce9ee0f413f9db798ade49d7fedd395b491.{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}"
     },
     {
       "name": "multi-sample-batch",
       "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
       "deviceId": "00000000-0000-4000-8000-000000000001",
       "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
-      "body": "{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}},{\"recordedAt\":\"2023-11-14T22:15:20Z\",\"values\":{\"temperature\":28}}]}",
-      "signature": "841d9a694c87870c95d6feecb216ec474480f3eb01a9fbcd8e08c16fb49f20c0",
-      "payload": "v1.841d9a694c87870c95d6feecb216ec474480f3eb01a9fbcd8e08c16fb49f20c0.{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}},{\"recordedAt\":\"2023-11-14T22:15:20Z\",\"values\":{\"temperature\":28}}]}"
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}},{\"recordedAt\":\"2023-11-14T22:15:20Z\",\"values\":{\"temperature\":28}}]}",
+      "signature": "0d938be9a29524b48e50807c0c21256049aeb3302e23108aa6c616ba86ce9c74",
+      "payload": "v1.0d938be9a29524b48e50807c0c21256049aeb3302e23108aa6c616ba86ce9c74.{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}},{\"recordedAt\":\"2023-11-14T22:15:20Z\",\"values\":{\"temperature\":28}}]}"
     },
     {
       "name": "second-device",
       "secret": "golden-secret-not-real-BBBBBBBBBBBBBBBBBBBB",
       "deviceId": "00000000-0000-4000-8000-000000000002",
       "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000002/readings",
-      "body": "{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":26.25}}]}",
-      "signature": "c5e87c281d4238fca4c6e76649e4f1a1b411fdca4dc1764c2491040b873ca3f7",
-      "payload": "v1.c5e87c281d4238fca4c6e76649e4f1a1b411fdca4dc1764c2491040b873ca3f7.{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":26.25}}]}"
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":26.25}}]}",
+      "signature": "5ed7c10a5da88e8028e408b8ce2740f18218b1cb31327740c7e7ad759076b7c2",
+      "payload": "v1.5ed7c10a5da88e8028e408b8ce2740f18218b1cb31327740c7e7ad759076b7c2.{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":26.25}}]}"
     },
     {
       "name": "temperature-and-turbidity",
       "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
       "deviceId": "00000000-0000-4000-8000-000000000001",
       "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
-      "body": "{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}}]}",
-      "signature": "bbbfe38d002607f2f1a0bc018d00be28853f47034b5ac3ba4b5d6db04140624e",
-      "payload": "v1.bbbfe38d002607f2f1a0bc018d00be28853f47034b5ac3ba4b5d6db04140624e.{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}}]}"
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}}]}",
+      "signature": "b83c43c26ce27fbf241f99dc476aa64f0c5e9e5fd489a2231a90ec54bfb899e4",
+      "payload": "v1.b83c43c26ce27fbf241f99dc476aa64f0c5e9e5fd489a2231a90ec54bfb899e4.{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}}]}"
     },
     {
       "name": "turbidity-only-sample",
       "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
       "deviceId": "00000000-0000-4000-8000-000000000001",
       "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
-      "body": "{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"turbidity\":250.5}}]}",
-      "signature": "9fddb24047cb0d6898a8cb69ca670e216a876a202f38f0b8099ff46213f9db4c",
-      "payload": "v1.9fddb24047cb0d6898a8cb69ca670e216a876a202f38f0b8099ff46213f9db4c.{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"turbidity\":250.5}}]}"
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"turbidity\":250.5}}]}",
+      "signature": "b91e60947a6c12bfa0e12e469a9cdcdd15986bb16e1c31a4bf6778ed05190158",
+      "payload": "v1.b91e60947a6c12bfa0e12e469a9cdcdd15986bb16e1c31a4bf6778ed05190158.{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"turbidity\":250.5}}]}"
     },
     {
       "name": "turbidity-nan-omitted-in-batch",
       "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
       "deviceId": "00000000-0000-4000-8000-000000000001",
       "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
-      "body": "{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}}]}",
-      "signature": "3c1543b542c635322db27ef4e1f1393e94ac82fb87eae4ec5c48f8671cdb6dcb",
-      "payload": "v1.3c1543b542c635322db27ef4e1f1393e94ac82fb87eae4ec5c48f8671cdb6dcb.{\"firmwareVersion\":\"0.5.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}}]}"
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}}]}",
+      "signature": "121ccae844014528b87a08f3dafed0ecd5a908a686c6dad86e8f848441fb3c63",
+      "payload": "v1.121ccae844014528b87a08f3dafed0ecd5a908a686c6dad86e8f848441fb3c63.{\"firmwareVersion\":\"0.6.0\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5,\"turbidity\":12.3}},{\"recordedAt\":\"2023-11-14T22:14:20Z\",\"values\":{\"temperature\":26.25}}]}"
     },
     {
       "name": "wifi-ssid-awkward",
       "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
       "deviceId": "00000000-0000-4000-8000-000000000001",
       "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
-      "body": "{\"firmwareVersion\":\"0.5.0\",\"wifiSsid\":\"Bahay \\\"Kubo\\\" \\\\ Café\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}",
-      "signature": "912bb6554a075faa733188e2437fe5f7bbd8a7ff550fa75b77131dfeef17eb54",
-      "payload": "v1.912bb6554a075faa733188e2437fe5f7bbd8a7ff550fa75b77131dfeef17eb54.{\"firmwareVersion\":\"0.5.0\",\"wifiSsid\":\"Bahay \\\"Kubo\\\" \\\\ Café\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}"
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"wifiSsid\":\"Bahay \\\"Kubo\\\" \\\\ Café\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}",
+      "signature": "8b3f6a8336e8659e909fb66698ab1ff483f33c29e3d8633687b742742d5070ed",
+      "payload": "v1.8b3f6a8336e8659e909fb66698ab1ff483f33c29e3d8633687b742742d5070ed.{\"firmwareVersion\":\"0.6.0\",\"wifiSsid\":\"Bahay \\\"Kubo\\\" \\\\ Café\",\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}"
+    },
+    {
+      "name": "diagnostics-and-sensor-status",
+      "secret": "golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "topic": "truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings",
+      "body": "{\"firmwareVersion\":\"0.6.0\",\"wifiSsid\":\"BFAR-Pond-1\",\"diag\":{\"rssi\":-67,\"uptimeS\":86400,\"resetReason\":\"power_on\",\"freeHeap\":201344,\"queued\":3},\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"no_signal\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}",
+      "signature": "7970b61b299fcf13afe3d807331773b64cb6065907f742d82554b6b312631e7c",
+      "payload": "v1.7970b61b299fcf13afe3d807331773b64cb6065907f742d82554b6b312631e7c.{\"firmwareVersion\":\"0.6.0\",\"wifiSsid\":\"BFAR-Pond-1\",\"diag\":{\"rssi\":-67,\"uptimeS\":86400,\"resetReason\":\"power_on\",\"freeHeap\":201344,\"queued\":3},\"sensors\":{\"temperature\":\"ok\",\"turbidity\":\"no_signal\"},\"samples\":[{\"recordedAt\":\"2023-11-14T22:13:20Z\",\"values\":{\"temperature\":27.5}}]}"
     }
   ]
 }

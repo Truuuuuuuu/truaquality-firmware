@@ -165,35 +165,67 @@ namespace turbidity
     return std::round(ntu / NTU_ROUND_STEP) * NTU_ROUND_STEP;
   }
 
-  // The single entry point. The steps run in this exact order so every fault and clamp has one unambiguous
-  // outcome and no two of them can both claim a reading.
-  inline float ntuFromPinMv(float pinMv, uint16_t clearWaterMv)
+  // Why a reading is or isn't usable. Its own enum rather than sensors::TurbidityStatus on purpose: this
+  // header must not include Sensors.h, because lib/Provisioning includes this header and LDF would then have
+  // to chase Sensors across libraries. Sensors.cpp maps one onto the other with an explicit switch.
+  enum class Status : uint8_t
+  {
+    Ok,
+    NoSignal,
+    Uncalibrated,
+    OverRange,
+  };
+
+  // Step 3 of the conversion, on its own so classify() and ntuFromPinMv() compute the same number.
+  // Ratio normalization (D-05): scaling by the unit's own clear-water reading cancels the divider
+  // tolerance, the unit's actual 5 V rail and the LED/phototransistor spread between clones at once, which
+  // is what makes one vendor curve usable across units.
+  inline float normalizedVolts(float pinMv, uint16_t clearWaterMv)
+  {
+    const float sensorVolts = sensorMvFromPinMv(pinMv) / 1000.0f;
+    return sensorVolts * (VENDOR_ZERO_V / (static_cast<float>(clearWaterMv) / 1000.0f));
+  }
+
+  // The single home of every fault decision (steps 1, 2 and 4), in the order ntuFromPinMv has always run
+  // them. The unit reports the result as its turbidity status, and ntuFromPinMv refuses on anything but Ok,
+  // so the status sent and whether a value is sent can never disagree (the native equivalence sweep pins it).
+  inline Status classify(float pinMv, uint16_t clearWaterMv)
   {
     // 1. Dead signal or dead 5 V supply (D-01). R2 pulls an unplugged pin toward GND, which the curve would
     //    happily read as maximum turbidity; NAN is the only honest answer and the upload omits it.
     if (std::isnan(pinMv) || pinMv < FAULT_FLOOR_PIN_MV)
     {
-      return NAN;
+      return Status::NoSignal;
     }
 
-    // 2. No trustworthy reference to normalize against (D-04 uncalibrated, D-17 implausible).
+    // 2. No trustworthy reference to normalize against (D-04 uncalibrated, D-17 implausible). Checked
+    //    before step 4, which needs a trustworthy reference to mean anything.
     if (!isPlausibleClearWaterMv(clearWaterMv))
     {
-      return NAN;
+      return Status::Uncalibrated;
     }
-
-    // 3. Ratio normalization (D-05): scaling by the unit's own clear-water reading cancels the divider
-    //    tolerance, the unit's actual 5 V rail and the LED/phototransistor spread between clones at once,
-    //    which is what makes one vendor curve usable across units.
-    const float sensorVolts = sensorMvFromPinMv(pinMv) / 1000.0f;
-    const float vEff = sensorVolts * (VENDOR_ZERO_V / (static_cast<float>(clearWaterMv) / 1000.0f));
 
     // 4. Far above the reference (D-03): the supply drifted up or the stored calibration is stale. Not 0 —
     //    "impossibly clean" is a fault report, not a measurement.
-    if (vEff > VENDOR_ZERO_V * (1.0f + HIGH_VOLTAGE_MARGIN))
+    if (normalizedVolts(pinMv, clearWaterMv) > VENDOR_ZERO_V * (1.0f + HIGH_VOLTAGE_MARGIN))
+    {
+      return Status::OverRange;
+    }
+
+    return Status::Ok;
+  }
+
+  // The single entry point. The steps run in this exact order so every fault and clamp has one unambiguous
+  // outcome and no two of them can both claim a reading. Steps 1, 2 and 4 are classify()'s.
+  inline float ntuFromPinMv(float pinMv, uint16_t clearWaterMv)
+  {
+    if (classify(pinMv, clearWaterMv) != Status::Ok)
     {
       return NAN;
     }
+
+    // 3. Ratio normalization — see normalizedVolts().
+    const float vEff = normalizedVolts(pinMv, clearWaterMv);
 
     // 5. At or above the reference, clamp to 0 and never negative (D-03). The comparison is deliberately an
     //    inequality with named slack rather than a bare >= VENDOR_ZERO_V: an exact comparison is a

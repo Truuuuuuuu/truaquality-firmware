@@ -17,7 +17,7 @@
 // byte-for-byte, which is what test_frame_matches_vector_payload does.
 namespace
 {
-  const char *FIRMWARE_VERSION = "0.5.0";
+  const char *FIRMWARE_VERSION = "0.6.0";
 
   // 2023-11-14T22:13:20Z — the fixture's first timestamp. The batch vector adds 60 s per sample.
   const std::time_t T0 = 1700000000;
@@ -26,8 +26,8 @@ namespace
 void test_fixture_is_the_expected_one(void)
 {
   // A corrupted or half-generated signing_vectors.h would otherwise let every case below pass vacuously.
-  TEST_ASSERT_EQUAL_UINT(7, GOLDEN_VECTOR_COUNT);
-  TEST_ASSERT_EQUAL_STRING("b1a776ca532c46a3bc2538ee73d5d18aea3c0dbd85a126fdc682bc648b3c4a80",
+  TEST_ASSERT_EQUAL_UINT(8, GOLDEN_VECTOR_COUNT);
+  TEST_ASSERT_EQUAL_STRING("b537560d7b8e2fd2f7ff0f52b9b86ce9ee0f413f9db798ade49d7fedd395b491",
                            GOLDEN_VECTORS[0].signature);
 }
 
@@ -42,10 +42,12 @@ void test_topic_matches_backend(void)
 
 void test_single_sample_body(void)
 {
-  // Every SensorSample literal in this file spells out all of its fields. An omitted second initializer is
+  // Every SensorSample literal in this file spells out all four fields. An omitted second initializer is
   // not "unset": it value-initializes turbidity to 0.0f, which serializes as a real, plausible "crystal
-  // clear water" reading instead of being omitted the way a missing sensor must be.
-  wire::Stamped batch[] = {{T0, {27.5f, NAN}}};
+  // clear water" reading instead of being omitted the way a missing sensor must be — and an omitted status
+  // value-initializes to Ok. The statuses don't reach these bodies (the 4-arg overload emits none) but are
+  // kept honest anyway: NotFound/NoSignal wherever the value is missing.
+  wire::Stamped batch[] = {{T0, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}}};
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[0].body,
                            wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1).c_str());
 }
@@ -55,14 +57,18 @@ void test_multi_sample_batch_keeps_distinct_timestamps(void)
   // Regression guard: buildBody reuses one char timestamp[25] across the loop. ArduinoJson copies a
   // non-const char[] but stores a const char* by reference, so weakening that buffer's type would give all
   // three samples the last timestamp — and this is the only case that would notice.
-  wire::Stamped batch[] = {{T0, {27.5f, NAN}}, {T0 + 60, {26.25f, NAN}}, {T0 + 120, {28.0f, NAN}}};
+  wire::Stamped batch[] = {
+      {T0, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}},
+      {T0 + 60, {26.25f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}},
+      {T0 + 120, {28.0f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}},
+  };
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[1].body,
                            wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 3).c_str());
 }
 
 void test_second_device_body(void)
 {
-  wire::Stamped batch[] = {{T0, {26.25f, NAN}}};
+  wire::Stamped batch[] = {{T0, {26.25f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}}};
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[2].body,
                            wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1).c_str());
 }
@@ -72,7 +78,7 @@ void test_temperature_and_turbidity_body(void)
   // Catches a swapped JSON key order. The keys are emitted in addValue call order, so putting turbidity
   // first would still produce valid JSON with the same numbers — and a different signature for every batch
   // the unit ever publishes, i.e. a fleet the backend rejects wholesale.
-  wire::Stamped batch[] = {{T0, {27.5f, 12.3f}}};
+  wire::Stamped batch[] = {{T0, {27.5f, 12.3f, TemperatureStatus::Ok, TurbidityStatus::Ok}}};
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[3].body,
                            wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1).c_str());
 }
@@ -81,7 +87,7 @@ void test_turbidity_only_body(void)
 {
   // The DS18B20 unplugged on a calibrated unit. Catches a temperature NAN being emitted as null or 0 when
   // it is the only missing value: the temperature key has to be absent, not present-and-wrong.
-  wire::Stamped batch[] = {{T0, {NAN, 250.5f}}};
+  wire::Stamped batch[] = {{T0, {NAN, 250.5f, TemperatureStatus::NotFound, TurbidityStatus::Ok}}};
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[4].body,
                            wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1).c_str());
 }
@@ -91,7 +97,10 @@ void test_nan_turbidity_is_omitted_mid_batch(void)
   // The case SENS-03/SENS-04 turn on: a faulted or uncalibrated turbidity sensor must vanish from the upload
   // while temperature keeps reporting, sample by sample within one batch. A 0.0f leaking in here would be
   // indistinguishable from a genuine clear-water reading once it is in the database.
-  wire::Stamped batch[] = {{T0, {27.5f, 12.3f}}, {T0 + 60, {26.25f, NAN}}};
+  wire::Stamped batch[] = {
+      {T0, {27.5f, 12.3f, TemperatureStatus::Ok, TurbidityStatus::Ok}},
+      {T0 + 60, {26.25f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}},
+  };
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[5].body,
                            wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 2).c_str());
 }
@@ -100,14 +109,14 @@ void test_awkward_ssid_body(void)
 {
   // Quote, backslash and a non-ASCII character in one SSID: ArduinoJson must escape and pass through exactly
   // what the backend's JSON.stringify does, or the signature differs by a byte nobody would think to check.
-  wire::Stamped batch[] = {{T0, {27.5f, NAN}}};
+  wire::Stamped batch[] = {{T0, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}}};
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[6].body,
                            wire::buildBody(FIRMWARE_VERSION, "Bahay \"Kubo\" \\ Caf\xC3\xA9", batch, 1).c_str());
 }
 
 void test_empty_or_missing_ssid_is_omitted(void)
 {
-  wire::Stamped batch[] = {{T0, {27.5f, NAN}}};
+  wire::Stamped batch[] = {{T0, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}}};
   std::string missing = wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1);
   std::string empty = wire::buildBody(FIRMWARE_VERSION, "", batch, 1);
   TEST_ASSERT_NULL(strstr(missing.c_str(), "wifiSsid"));
@@ -133,10 +142,10 @@ void test_hex_is_lowercase(void)
   // independent byte array against the fixture's hex rather than re-deriving one from the other. They move
   // with every regeneration that changes vector 0 — which a FIRMWARE_VERSION bump always does, because the
   // version string is inside the signed body.
-  const uint8_t mac[32] = {0xb1, 0xa7, 0x76, 0xca, 0x53, 0x2c, 0x46, 0xa3,
-                           0xbc, 0x25, 0x38, 0xee, 0x73, 0xd5, 0xd1, 0x8a,
-                           0xea, 0x3c, 0x0d, 0xbd, 0x85, 0xa1, 0x26, 0xfd,
-                           0xc6, 0x82, 0xbc, 0x64, 0x8b, 0x3c, 0x4a, 0x80};
+  const uint8_t mac[32] = {0xb5, 0x37, 0x56, 0x0d, 0x7b, 0x8e, 0x2f, 0xd2,
+                           0xf7, 0xff, 0x0f, 0x52, 0xb9, 0xb8, 0x6c, 0xe9,
+                           0xee, 0x0f, 0x41, 0x3f, 0x9d, 0xb7, 0x98, 0xad,
+                           0xe4, 0x9d, 0x7f, 0xed, 0xd3, 0x95, 0xb4, 0x91};
   char hex[65];
   wire::toHexLower(mac, sizeof(mac), hex);
   TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[0].signature, hex);
@@ -157,19 +166,133 @@ void test_nan_parameter_is_omitted_not_null(void)
   // ARDUINOJSON_ENABLE_NAN is 0, so a NAN that got past the guard would serialize as null — which the
   // backend accepts and silently drops. The failure would be invisible in production; it has to be caught
   // here instead.
-  wire::Stamped batch[] = {{T0, {NAN, NAN}}};
+  wire::Stamped batch[] = {{T0, {NAN, NAN, TemperatureStatus::NotFound, TurbidityStatus::NoSignal}}};
   TEST_ASSERT_EQUAL_STRING(
-      R"RAW({"firmwareVersion":"0.5.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{}}]})RAW",
+      R"RAW({"firmwareVersion":"0.6.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{}}]})RAW",
       wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1).c_str());
 }
 
 void test_infinite_parameter_is_omitted_not_null(void)
 {
   // ARDUINOJSON_ENABLE_INFINITY is 0 too, so +/-infinity would serialize as null exactly like NAN.
-  wire::Stamped batch[] = {{T0, {INFINITY, -INFINITY}}};
+  wire::Stamped batch[] = {{T0, {INFINITY, -INFINITY, TemperatureStatus::NotFound, TurbidityStatus::NoSignal}}};
   TEST_ASSERT_EQUAL_STRING(
-      R"RAW({"firmwareVersion":"0.5.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{}}]})RAW",
+      R"RAW({"firmwareVersion":"0.6.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{}}]})RAW",
       wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1).c_str());
+}
+
+void test_diagnostics_and_sensor_status_body(void)
+{
+  // The 0.6.0 shape, byte for byte: diag after wifiSsid, sensors after diag, and turbidity's value omitted
+  // because its status isn't ok.
+  const wire::Diagnostics diag{-67, 86400, wire::ResetReason::PowerOn, 201344, 3};
+  wire::Stamped batch[] = {{T0, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}}};
+  TEST_ASSERT_EQUAL_STRING("diagnostics-and-sensor-status", GOLDEN_VECTORS[7].name);
+  TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[7].body,
+                           wire::buildBody(FIRMWARE_VERSION, "BFAR-Pond-1", &diag, true, batch, 1).c_str());
+}
+
+void test_sensor_status_comes_from_the_newest_sample(void)
+{
+  // The backend stores the status "at the newest sample in the batch". Taking the first sample would report
+  // a probe that was re-plugged mid-batch as still missing, and SENSOR_RECOVERED would fire a batch late.
+  wire::Stamped batch[] = {
+      {T0, {NAN, NAN, TemperatureStatus::NotFound, TurbidityStatus::Uncalibrated}},
+      {T0 + 60, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::OverRange}},
+  };
+  std::string body = wire::buildBody(FIRMWARE_VERSION, nullptr, nullptr, true, batch, 2);
+  TEST_ASSERT_NOT_NULL(strstr(body.c_str(), R"RAW("sensors":{"temperature":"ok","turbidity":"over_range"})RAW"));
+  TEST_ASSERT_NULL(strstr(body.c_str(), "not_found"));
+  TEST_ASSERT_NULL(strstr(body.c_str(), "uncalibrated"));
+}
+
+void test_diag_and_sensors_are_independently_optional(void)
+{
+  const wire::Diagnostics diag{-50, 10, wire::ResetReason::Software, 1000, 1};
+  wire::Stamped batch[] = {{T0, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}}};
+
+  std::string diagOnly = wire::buildBody(FIRMWARE_VERSION, nullptr, &diag, false, batch, 1);
+  TEST_ASSERT_NOT_NULL(strstr(diagOnly.c_str(), "\"diag\":"));
+  TEST_ASSERT_NULL(strstr(diagOnly.c_str(), "\"sensors\":"));
+
+  std::string sensorsOnly = wire::buildBody(FIRMWARE_VERSION, nullptr, nullptr, true, batch, 1);
+  TEST_ASSERT_NULL(strstr(sensorsOnly.c_str(), "\"diag\":"));
+  TEST_ASSERT_NOT_NULL(strstr(sensorsOnly.c_str(), "\"sensors\":"));
+
+  // No samples means no newest sample to take a status from, so no sensors object at all.
+  std::string empty = wire::buildBody(FIRMWARE_VERSION, nullptr, nullptr, true, batch, 0);
+  TEST_ASSERT_NULL(strstr(empty.c_str(), "\"sensors\":"));
+
+  // Key order is signed bytes: wifiSsid < diag < sensors < samples.
+  std::string both = wire::buildBody(FIRMWARE_VERSION, "Pond", &diag, true, batch, 1);
+  const char *ssid = strstr(both.c_str(), "\"wifiSsid\":");
+  const char *d = strstr(both.c_str(), "\"diag\":");
+  const char *sn = strstr(both.c_str(), "\"sensors\":");
+  const char *sm = strstr(both.c_str(), "\"samples\":");
+  TEST_ASSERT_NOT_NULL(ssid);
+  TEST_ASSERT_NOT_NULL(d);
+  TEST_ASSERT_NOT_NULL(sn);
+  TEST_ASSERT_NOT_NULL(sm);
+  TEST_ASSERT_TRUE(ssid < d);
+  TEST_ASSERT_TRUE(d < sn);
+  TEST_ASSERT_TRUE(sn < sm);
+}
+
+namespace
+{
+  std::string diagBody(int64_t rssi, int64_t uptimeS, int64_t freeHeap, int64_t queued)
+  {
+    const wire::Diagnostics diag{rssi, uptimeS, wire::ResetReason::Unknown, freeHeap, queued};
+    wire::Stamped batch[] = {{T0, {27.5f, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal}}};
+    return wire::buildBody(FIRMWARE_VERSION, nullptr, &diag, false, batch, 1);
+  }
+}
+
+void test_diag_numbers_are_clamped_to_the_backend_ranges(void)
+{
+  // The backend rejects the WHOLE message for one out-of-range diag number, and the batch's readings go with
+  // it — so a wild RSSI or a queue count past the cap must be clamped here, never sent as-is.
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(5, 1, 1, 1).c_str(), "\"rssi\":0,"));
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(-200, 1, 1, 1).c_str(), "\"rssi\":-127,"));
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(-60, 1, 1, 500).c_str(), "\"queued\":120}"));
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(-60, 1, 1, -1).c_str(), "\"queued\":0}"));
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(-60, -5, 1, 1).c_str(), "\"uptimeS\":0,"));
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(-60, 5000000000LL, 1, 1).c_str(), "\"uptimeS\":2147483647,"));
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(-60, 1, -5, 1).c_str(), "\"freeHeap\":0,"));
+  TEST_ASSERT_NOT_NULL(strstr(diagBody(-60, 1, 5000000000LL, 1).c_str(), "\"freeHeap\":2147483647,"));
+  // In-range values pass through untouched.
+  TEST_ASSERT_NOT_NULL(
+      strstr(diagBody(-60, 42, 123456, 7).c_str(),
+             R"RAW("diag":{"rssi":-60,"uptimeS":42,"resetReason":"unknown","freeHeap":123456,"queued":7})RAW"));
+}
+
+void test_reset_reason_tokens_match_backend(void)
+{
+  // Expected strings are the backend's RESET_REASONS (backend/src/schemas/ingest.ts), written out by hand so
+  // a typo on either side shows up here instead of as a rejected message.
+  TEST_ASSERT_EQUAL_STRING("power_on", wire::resetReasonToken(wire::ResetReason::PowerOn));
+  TEST_ASSERT_EQUAL_STRING("software", wire::resetReasonToken(wire::ResetReason::Software));
+  TEST_ASSERT_EQUAL_STRING("panic", wire::resetReasonToken(wire::ResetReason::Panic));
+  TEST_ASSERT_EQUAL_STRING("int_wdt", wire::resetReasonToken(wire::ResetReason::IntWdt));
+  TEST_ASSERT_EQUAL_STRING("task_wdt", wire::resetReasonToken(wire::ResetReason::TaskWdt));
+  TEST_ASSERT_EQUAL_STRING("wdt", wire::resetReasonToken(wire::ResetReason::Wdt));
+  TEST_ASSERT_EQUAL_STRING("brownout", wire::resetReasonToken(wire::ResetReason::Brownout));
+  TEST_ASSERT_EQUAL_STRING("deep_sleep", wire::resetReasonToken(wire::ResetReason::DeepSleep));
+  TEST_ASSERT_EQUAL_STRING("external", wire::resetReasonToken(wire::ResetReason::External));
+  TEST_ASSERT_EQUAL_STRING("unknown", wire::resetReasonToken(wire::ResetReason::Unknown));
+}
+
+void test_sensor_status_tokens_match_backend(void)
+{
+  // The backend's SENSOR_STATUSES (backend/src/schemas/ingest.ts).
+  TEST_ASSERT_EQUAL_STRING("ok", sensors::statusToken(TemperatureStatus::Ok));
+  TEST_ASSERT_EQUAL_STRING("not_found", sensors::statusToken(TemperatureStatus::NotFound));
+  TEST_ASSERT_EQUAL_STRING("disconnected", sensors::statusToken(TemperatureStatus::Disconnected));
+  TEST_ASSERT_EQUAL_STRING("power_on_value", sensors::statusToken(TemperatureStatus::PowerOnValue));
+  TEST_ASSERT_EQUAL_STRING("ok", sensors::statusToken(TurbidityStatus::Ok));
+  TEST_ASSERT_EQUAL_STRING("no_signal", sensors::statusToken(TurbidityStatus::NoSignal));
+  TEST_ASSERT_EQUAL_STRING("uncalibrated", sensors::statusToken(TurbidityStatus::Uncalibrated));
+  TEST_ASSERT_EQUAL_STRING("over_range", sensors::statusToken(TurbidityStatus::OverRange));
 }
 
 int main(int argc, char **argv)
@@ -192,5 +315,11 @@ int main(int argc, char **argv)
   RUN_TEST(test_frame_matches_vector_payload);
   RUN_TEST(test_nan_parameter_is_omitted_not_null);
   RUN_TEST(test_infinite_parameter_is_omitted_not_null);
+  RUN_TEST(test_diagnostics_and_sensor_status_body);
+  RUN_TEST(test_sensor_status_comes_from_the_newest_sample);
+  RUN_TEST(test_diag_and_sensors_are_independently_optional);
+  RUN_TEST(test_diag_numbers_are_clamped_to_the_backend_ranges);
+  RUN_TEST(test_reset_reason_tokens_match_backend);
+  RUN_TEST(test_sensor_status_tokens_match_backend);
   return UNITY_END();
 }

@@ -34,16 +34,60 @@ namespace
   // like a measurement.
   TurbidityDiagnostics lastDiagnostics{NAN, NAN, NAN, NAN, NAN};
 
-  float readTemperature()
+  // Exactly representable in float, so == is correct. The DS18B20 holds this in its scratchpad after a
+  // power-on reset until a conversion completes; firmware before 0.6.0 published it as a real 85 C reading.
+  constexpr float POWER_ON_RESET_C = 85.0f;
+
+  struct TemperatureRead
   {
+    float celsius;
+    TemperatureStatus status;
+  };
+
+  TemperatureRead readTemperature()
+  {
+    // Re-scan the bus on every read. getDeviceCount() is only the count cached by the last begin(), so
+    // without this an unplugged-then-replugged probe would stay "not_found" until a reboot and the backend's
+    // SENSOR_RECOVERED event would never fire. A search on an idle one-probe bus costs a few milliseconds.
+    ds18b20.begin();
+    if (ds18b20.getDeviceCount() == 0)
+    {
+      return TemperatureRead{NAN, TemperatureStatus::NotFound};
+    }
     ds18b20.requestTemperatures();
-    float celsius = ds18b20.getTempCByIndex(0);
+    const float celsius = ds18b20.getTempCByIndex(0);
     if (celsius == DISCONNECTED_C || celsius == DEVICE_DISCONNECTED_C)
     {
-      return NAN;
+      return TemperatureRead{NAN, TemperatureStatus::Disconnected};
     }
-    return celsius;
+    if (celsius == POWER_ON_RESET_C)
+    {
+      return TemperatureRead{NAN, TemperatureStatus::PowerOnValue};
+    }
+    return TemperatureRead{celsius, TemperatureStatus::Ok};
   }
+
+  // An explicit switch, not a cast: the two enums are declared separately (TurbidityMath.h must not include
+  // Sensors.h) and a cast would silently pair the wrong statuses if either list were ever reordered.
+  TurbidityStatus toTurbidityStatus(turbidity::Status status)
+  {
+    switch (status)
+    {
+    case turbidity::Status::Ok:
+      return TurbidityStatus::Ok;
+    case turbidity::Status::NoSignal:
+      return TurbidityStatus::NoSignal;
+    case turbidity::Status::Uncalibrated:
+      return TurbidityStatus::Uncalibrated;
+    case turbidity::Status::OverRange:
+      return TurbidityStatus::OverRange;
+    }
+    return TurbidityStatus::NoSignal;
+  }
+
+  // Seeded with Ok so a unit that boots healthy logs nothing, and one that boots faulted logs the fault once.
+  TemperatureStatus lastTemperatureStatus = TemperatureStatus::Ok;
+  TurbidityStatus lastTurbidityStatus = TurbidityStatus::Ok;
 
   // One acquisition. Neither the 1 ms spacing nor the trim is arbitrary: WiFi TX bursts put one-sided spikes
   // on ESP32 ADC reads, so spreading the samples over ~64 ms and dropping the extremes rejects a spike the
@@ -76,16 +120,23 @@ namespace
     return burst;
   }
 
-  float readTurbidity()
+  struct TurbidityRead
   {
-    captureBurst();
+    float ntu;
+    TurbidityStatus status;
+  };
+
+  TurbidityRead readTurbidity()
+  {
+    const turbidity::Burst burst = captureBurst();
     // No guard of its own, no local clamp. Every fault decision — below the fault floor, uncalibrated,
-    // implausible calibration, far above the reference, below the curve's range — already lives in
-    // turbidity::ntuFromPinMv in one fixed order, pinned by native tests. A second opinion here would be a
-    // second opinion nothing tests. Returning the field captureBurst() just computed, rather than
-    // recomputing, also guarantees the value that goes on the wire is the same number an admin sees in
-    // the diagnostics for that same burst.
-    return lastDiagnostics.ntu;
+    // implausible calibration, far above the reference — lives in turbidity::classify, which ntuFromPinMv
+    // also runs, pinned by native tests. Classifying the same burst captureBurst() just converted keeps the
+    // status and the value from ever disagreeing, and returning the field captureBurst() just computed,
+    // rather than recomputing, guarantees the value on the wire is the number an admin sees in the
+    // diagnostics for that same burst.
+    const TurbidityStatus status = toTurbidityStatus(turbidity::classify(burst.filteredMv, clearWaterMv));
+    return TurbidityRead{lastDiagnostics.ntu, status};
   }
 }
 
@@ -137,11 +188,31 @@ namespace sensors
 
   SensorSample readAll()
   {
-    // Positional with both fields spelled out — a positional initializer that names only temperature would
-    // value-initialize turbidity to 0.0f, and 0.0f is the one value that must never reach the wire: it is a
-    // perfectly plausible "crystal clear water" reading, so it would be stored and charted as a real
-    // measurement instead of being omitted. readTurbidity() returns NAN on a faulted pin or an uncalibrated
-    // unit, and wire::buildBody drops the key entirely for NAN.
-    return SensorSample{readTemperature(), readTurbidity()};
+    const TemperatureRead temperature = readTemperature();
+    const TurbidityRead turbidityRead = readTurbidity();
+
+    // The invariant the backend and the wire share: a status other than ok never travels with a value.
+    const float celsius = temperature.status == TemperatureStatus::Ok ? temperature.celsius : NAN;
+    const float ntu = turbidityRead.status == TurbidityStatus::Ok ? turbidityRead.ntu : NAN;
+
+    // Only on a change, never every read: a probe that stays unplugged would otherwise print the same line
+    // every REPORT_INTERVAL_MS forever.
+    if (temperature.status != lastTemperatureStatus)
+    {
+      Serial.printf("[sensors] temperature: %s\n", sensors::statusToken(temperature.status));
+      lastTemperatureStatus = temperature.status;
+    }
+    if (turbidityRead.status != lastTurbidityStatus)
+    {
+      Serial.printf("[sensors] turbidity: %s\n", sensors::statusToken(turbidityRead.status));
+      lastTurbidityStatus = turbidityRead.status;
+    }
+
+    // Positional with all four fields spelled out — a positional initializer that names only temperature
+    // would value-initialize turbidity to 0.0f, and 0.0f is the one value that must never reach the wire: it
+    // is a perfectly plausible "crystal clear water" reading, so it would be stored and charted as a real
+    // measurement instead of being omitted. An omitted status would likewise become Ok. wire::buildBody
+    // drops the key entirely for NAN.
+    return SensorSample{celsius, ntu, temperature.status, turbidityRead.status};
   }
 }

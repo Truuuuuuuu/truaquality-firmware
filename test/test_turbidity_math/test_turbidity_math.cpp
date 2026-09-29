@@ -270,6 +270,69 @@ void test_reported_ntu_is_rounded_to_the_declared_step(void)
   TEST_ASSERT_FLOAT_IS_NAN(turbidity::roundNtu(NAN));
 }
 
+void test_classify_dead_pin_is_no_signal(void)
+{
+  // The unit reports this as "no_signal": the signal wire or the 5 V supply is unplugged.
+  TEST_ASSERT_TRUE(turbidity::classify(NAN, CLEAR_MV) == turbidity::Status::NoSignal);
+  TEST_ASSERT_TRUE(turbidity::classify(0.0f, CLEAR_MV) == turbidity::Status::NoSignal);
+  TEST_ASSERT_TRUE(turbidity::classify(turbidity::FAULT_FLOOR_PIN_MV - 10.0f, CLEAR_MV) ==
+                   turbidity::Status::NoSignal);
+  // A dead pin is a dead pin even on an uncalibrated unit: step 1 runs first.
+  TEST_ASSERT_TRUE(turbidity::classify(0.0f, 0) == turbidity::Status::NoSignal);
+}
+
+void test_classify_missing_or_implausible_calibration_is_uncalibrated(void)
+{
+  TEST_ASSERT_TRUE(turbidity::classify(pinMvForNormalized(3.5f), 0) == turbidity::Status::Uncalibrated);
+  TEST_ASSERT_TRUE(turbidity::classify(pinMvForNormalized(3.5f),
+                                       static_cast<uint16_t>(turbidity::CLEAR_WATER_MIN_MV - 50)) ==
+                   turbidity::Status::Uncalibrated);
+  TEST_ASSERT_TRUE(turbidity::classify(pinMvForNormalized(3.5f),
+                                       static_cast<uint16_t>(turbidity::CLEAR_WATER_MAX_MV + 50)) ==
+                   turbidity::Status::Uncalibrated);
+  // Checked before over-range: a pin that would be far above the reference is still "uncalibrated" when
+  // there is no reference to be above — telling an admin "over range" there would send them the wrong way.
+  TEST_ASSERT_TRUE(
+      turbidity::classify(pinMvForNormalized(turbidity::VENDOR_ZERO_V * (1.0f + turbidity::HIGH_VOLTAGE_MARGIN * 2.0f)),
+                          0) == turbidity::Status::Uncalibrated);
+}
+
+void test_classify_far_above_reference_is_over_range(void)
+{
+  TEST_ASSERT_TRUE(
+      turbidity::classify(pinMvForNormalized(turbidity::VENDOR_ZERO_V * (1.0f + turbidity::HIGH_VOLTAGE_MARGIN * 2.0f)),
+                          CLEAR_MV) == turbidity::Status::OverRange);
+}
+
+void test_classify_usable_readings_are_ok(void)
+{
+  // Clear water (the zero clamp), mid-curve, and muddier than the curve covers (the ceiling) are all real
+  // readings — the last one especially: saturated is not a fault.
+  TEST_ASSERT_TRUE(turbidity::classify(pinMvForNormalized(turbidity::VENDOR_ZERO_V + FIXTURE_MARGIN_V), CLEAR_MV) ==
+                   turbidity::Status::Ok);
+  TEST_ASSERT_TRUE(turbidity::classify(pinMvForNormalized(3.5f), CLEAR_MV) == turbidity::Status::Ok);
+  TEST_ASSERT_TRUE(turbidity::classify(pinMvForNormalized(turbidity::CURVE_MIN_V - FIXTURE_MARGIN_V), CLEAR_MV) ==
+                   turbidity::Status::Ok);
+}
+
+void test_classify_ok_exactly_when_ntu_is_finite(void)
+{
+  // The status the unit reports and whether it sends a value must never disagree: "ok" with no value, or a
+  // value under a fault status, would contradict itself on the dashboard. Swept across every branch and
+  // across calibrations at and around the window's edges.
+  const uint16_t calibrations[] = {0, 2999, 3000, 4100, 4400, 4401};
+  for (uint16_t clear : calibrations)
+  {
+    for (int pin = 0; pin <= 3000; pin += 5)
+    {
+      const float pinMv = static_cast<float>(pin);
+      const bool ok = turbidity::classify(pinMv, clear) == turbidity::Status::Ok;
+      const bool finite = std::isfinite(turbidity::ntuFromPinMv(pinMv, clear));
+      TEST_ASSERT_EQUAL(ok, finite);
+    }
+  }
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -290,5 +353,10 @@ int main(int argc, char **argv)
   RUN_TEST(test_below_curve_range_clamps_to_ceiling_not_nan);
   RUN_TEST(test_curve_is_monotonic_decreasing_across_the_valid_range);
   RUN_TEST(test_reported_ntu_is_rounded_to_the_declared_step);
+  RUN_TEST(test_classify_dead_pin_is_no_signal);
+  RUN_TEST(test_classify_missing_or_implausible_calibration_is_uncalibrated);
+  RUN_TEST(test_classify_far_above_reference_is_over_range);
+  RUN_TEST(test_classify_usable_readings_are_ok);
+  RUN_TEST(test_classify_ok_exactly_when_ntu_is_finite);
   return UNITY_END();
 }

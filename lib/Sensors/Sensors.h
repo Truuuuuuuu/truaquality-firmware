@@ -10,12 +10,36 @@
 // "Sensors.h:<line>:10: fatal error: 'Arduino.h' file not found". The same error naming Sensors.cpp instead
 // means something broke the lib_ignore / -Ilib/Sensors pair in platformio.ini, not this header.
 //
+// Why each sensor is (or isn't) reporting, sent in the signed body's "sensors" object (firmware >= 0.6.0).
+// The tokens statusToken() returns are the backend's SENSOR_STATUSES in backend/src/schemas/ingest.ts; a
+// token it doesn't know rejects the whole message, readings included.
+enum class TemperatureStatus : unsigned char
+{
+  Ok,
+  NotFound,     // no DS18B20 answered on the bus
+  Disconnected, // the probe was found but a read came back -127
+  PowerOnValue, // exactly 85.0 C: the DS18B20's power-on-reset register value, never a measurement
+};
+
+enum class TurbidityStatus : unsigned char
+{
+  Ok,
+  NoSignal,     // pin under the fault floor: signal wire or 5 V supply unplugged
+  Uncalibrated, // no plausible clear-water reference stored
+  OverRange,    // far above the reference: supply drifted up or the calibration is stale
+};
+
 // One reading of every sensor. A value is NAN when its sensor failed or isn't wired up; NAN values are
-// left out of the upload rather than sent as zeros.
+// left out of the upload rather than sent as zeros. A status other than Ok always pairs with a NAN value,
+// because the backend omits a parameter's value whenever its status isn't "ok" and the wire must agree.
+// Every SensorSample literal must spell out all four fields: an omitted status value-initializes to Ok,
+// which would report a broken sensor as healthy, just as an omitted value would become a plausible 0.0f.
 struct SensorSample
 {
   float temperature; // °C
   float turbidity;   // NTU
+  TemperatureStatus temperatureStatus;
+  TurbidityStatus turbidityStatus;
 };
 
 // The intermediate numbers behind one turbidity acquisition, for the bench CSV and the serial calibration
@@ -33,6 +57,41 @@ struct TurbidityDiagnostics
 
 namespace sensors
 {
+  // One explicit case per enumerator and no default, so -Wswitch flags a new status that has no token yet.
+  // The trailing return is unreachable for a valid enumerator; it returns a fault token rather than "ok",
+  // because a corrupted value must never report a broken sensor as healthy.
+  inline const char *statusToken(TemperatureStatus status)
+  {
+    switch (status)
+    {
+    case TemperatureStatus::Ok:
+      return "ok";
+    case TemperatureStatus::NotFound:
+      return "not_found";
+    case TemperatureStatus::Disconnected:
+      return "disconnected";
+    case TemperatureStatus::PowerOnValue:
+      return "power_on_value";
+    }
+    return "not_found";
+  }
+
+  inline const char *statusToken(TurbidityStatus status)
+  {
+    switch (status)
+    {
+    case TurbidityStatus::Ok:
+      return "ok";
+    case TurbidityStatus::NoSignal:
+      return "no_signal";
+    case TurbidityStatus::Uncalibrated:
+      return "uncalibrated";
+    case TurbidityStatus::OverRange:
+      return "over_range";
+    }
+    return "no_signal";
+  }
+
   void begin();
   SensorSample readAll();
 

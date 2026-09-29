@@ -37,8 +37,11 @@ measured, and don't invent numbers for them. The *alert thresholds* are a separa
 backend's, set in Phase 4 from NTU-native sources, never the firmware's.
 
 Adding a parameter means a field on `SensorSample`, a reader in `lib/Sensors/Sensors.cpp`, an `addValue` line
-in `lib/Uplink/Uplink.cpp`, and the same id in the backend's `PARAMETER_BOUNDS` and the frontend's
-`PARAMETERS`.
+in `lib/WireFormat/WireFormat.cpp`, and the same id in the backend's `PARAMETER_BOUNDS` and the frontend's
+`PARAMETERS`. Since 0.6.0 it also means a status enum + `sensors::statusToken()` overload in `Sensors.h`, a
+status field on `SensorSample`, and a key in `wire::buildBody`'s `sensors` object — plus the backend's
+`SENSOR_STATUSES` if the sensor needs a token that list doesn't have yet (an unknown token rejects the whole
+message).
 
 ### Build-time configuration
 
@@ -155,12 +158,25 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
   - **Temperature:** real DS18B20 driver, OneWire bus on GPIO 4. The probe's data line needs a ~4.7kΩ
     pull-up to 3V3 if the module doesn't already have one built in. `sensors::begin()` logs a warning if no
     DS18B20 is found on the bus at boot (check wiring/pull-up if that happens).
+  - **Status (since 0.6.0):** each read also yields a status, sent as the body's `sensors` object.
+    Temperature: `ok` / `not_found` (no DS18B20 answered — the bus is re-scanned with `begin()` on *every*
+    read, because `getDeviceCount()` is only a cached count, so a replugged probe recovers without a reboot) /
+    `disconnected` (a -127 read) / `power_on_value` (exactly 85.0 °C, the DS18B20's power-on-reset value;
+    now NAN — firmware before 0.6.0 published it as a real reading). Turbidity: `ok` / `no_signal` /
+    `uncalibrated` / `over_range`, from `turbidity::classify` on the same burst the NTU came from. **A non-ok
+    status always means the value is omitted**, enforced in `readAll()`. A status change logs one
+    `[sensors] <parameter>: <token>` line; an unchanged one logs nothing.
   - `NAN` for any parameter means "no reading" — it's dropped from the upload rather than sent as a fake `0`.
   - `Sensors.h` is deliberately Arduino-free (the rule is recorded in the header) so `[env:native]` can
     compile it; `Sensors.cpp` is free to depend on Arduino because it's never built natively.
 - `lib/TurbidityMath/`: header-only and Arduino-free — the burst trim, the divider scaling, the vendor curve,
   the clear-water plausibility window and every fault decision, pinned by `test/test_turbidity_math/` on the
-  host. It is deliberately **absent from `[env:native]`'s `lib_ignore`**: a header-only library needs no
+  host. `classify()` is the single home of the fault decisions (no signal, uncalibrated, over range) and
+  `ntuFromPinMv()` starts by calling it, so the status a unit reports and whether it sends a value can't
+  disagree — `test_classify_ok_exactly_when_ntu_is_finite` sweeps that equivalence. This header must **not**
+  include `Sensors.h` (`lib/Provisioning` includes it, and LDF would then chase Sensors across libraries),
+  which is why `turbidity::Status` is its own enum, mapped onto `TurbidityStatus` by a switch in `Sensors.cpp`.
+  It is deliberately **absent from `[env:native]`'s `lib_ignore`**: a header-only library needs no
   entry there, and `lib_ignore` would strip its include path along with its (non-existent) sources. Its
   PROVISIONAL constants are the ones the bench session replaces.
 - `lib/WireFormat/`: the pure module that owns every byte the backend verifies — the topic string, the
@@ -180,8 +196,18 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     `v1.<lowercase hex HMAC-SHA256(DEVICE_SECRET, "<topic>\n<body>")>.<body>`, assembled by `wire::` and
     signed by `signBody()` in `Uplink.cpp`.
     - Signed because HiveMQ's free tier can't limit an MQTT login to its own topics.
-    - The body is `{"firmwareVersion", "wifiSsid"?, "samples": [{"recordedAt": ISO-8601 UTC, "values": {...}}]}`;
-    `wifiSsid` (`WiFi.SSID()` at publish time, since 0.5.0) is omitted when empty.
+    - The body is `{"firmwareVersion", "wifiSsid"?, "diag"?, "sensors"?, "samples": [{"recordedAt": ISO-8601
+      UTC, "values": {...}}]}`, in that key order (signed bytes). `wifiSsid` (`WiFi.SSID()` at publish time,
+      since 0.5.0) is omitted when empty.
+    - **`diag` (since 0.6.0)**, per message: `{rssi, uptimeS, resetReason, freeHeap, queued}` in that order.
+      `rssi` from `WiFi.RSSI()`; `uptimeS` from `esp_timer_get_time()`, **not `millis()`** — `millis()` wraps
+      after ~49.7 days and a falling uptime is what the backend reads as a REBOOT; `resetReason` is a token
+      mapped from `esp_reset_reason()` once in `begin()`; `freeHeap` from `ESP.getFreeHeap()`; `queued` is the
+      buffered count (`uplink::queuedSamples()`). All integers, and **clamped in `wire::` to the backend's
+      ranges** (rssi -127..0, queued 0..120, the rest 0..INT32_MAX), because one out-of-range number makes the
+      backend reject the whole message and its readings with it.
+    - **`sensors` (since 0.6.0)**: the status tokens of the **newest** sample in the batch — the backend
+      stores "status at the newest sample".
     - JSON parameter keys (`temperature`, and `turbidity` when the unit has a reading for it) must match the
       backend's `PARAMETER_BOUNDS`.
   - **TLS:** verified against ISRG Root X1 (`lib/Uplink/RootCa.h`, Let's Encrypt, valid until 2035), the root
@@ -189,7 +215,9 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
 - `include/` is for project header files shared across `src/` files.
 - `test/` holds the PlatformIO Unit Testing (Unity) suites:
   - `test/test_wireformat/` — native, `[env:native]`. Byte-for-byte parity with the backend's golden vectors,
-    entry point `int main()`.
+    entry point `int main()`. There are **8** vectors, the eighth being `diagnostics-and-sensor-status` (the
+    0.6.0 `diag` + `sensors` body). `FIRMWARE_VERSION` (0.6.0) is inside the signed body, so a bump moves every
+    signature — including the hand-written vector-0 bytes in `test_hex_is_lowercase`.
   - `test/test_turbidity_math/` — native, `[env:native]`. Pins every constant and every fault decision in
     `lib/TurbidityMath/`, entry point `int main()`.
   - `test/test_signing/` — on-device, `[env:nodemcu-32s]`. The real `mbedtls_md_hmac` against the vectors'

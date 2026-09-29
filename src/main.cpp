@@ -14,8 +14,9 @@
 // Serialized into every signed body, so a bump here invalidates every golden signature at once: it only ever
 // moves together with regenerated vectors (backend `npm run generate:signing-vectors`, then
 // `node scripts/sync-golden-vectors.mjs`). 0.4.0 is the first version that can report turbidity; 0.5.0 also
-// reports wifiSsid. That is how Device.firmwareVersion tells the backend which units can.
-static const char *FIRMWARE_VERSION = "0.5.0";
+// reports wifiSsid; 0.6.0 also reports diag and per-sensor status. That is how Device.firmwareVersion tells
+// the backend which units can.
+static const char *FIRMWARE_VERSION = "0.6.0";
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 
 static unsigned long lastReadingMs = 0;

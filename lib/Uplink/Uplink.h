@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "Sensors.h"
@@ -31,6 +32,9 @@ namespace uplink
 
   // Adds a sample stamped with the current time. When the buffer is full the oldest sample is dropped.
   void enqueue(const SensorSample &sample);
+
+  // Samples buffered and not yet acknowledged, sent as diag.queued.
+  size_t queuedSamples();
 
   // Call on every loop(): keeps the MQTT connection up and publishes buffered samples, a batch at a time. A
   // batch leaves the buffer only once the broker acknowledges it (QoS 1).

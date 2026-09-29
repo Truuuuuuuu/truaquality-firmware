@@ -21,6 +21,36 @@ namespace wire
     SensorSample sample;
   };
 
+  // esp_reset_reason() reduced to the backend's RESET_REASONS (backend/src/schemas/ingest.ts). Its own enum so
+  // this library stays free of the ESP-IDF headers; Uplink.cpp does the mapping on the board.
+  enum class ResetReason : uint8_t
+  {
+    PowerOn,
+    Software,
+    Panic,
+    IntWdt,
+    TaskWdt,
+    Wdt,
+    Brownout,
+    DeepSleep,
+    External,
+    Unknown,
+  };
+
+  const char *resetReasonToken(ResetReason reason);
+
+  // The unit's self-report, sent once per message as the body's "diag" object (firmware >= 0.6.0). Wide
+  // int64 fields so callers pass raw values straight in: buildBody clamps each into the backend's accepted
+  // range, because one out-of-range number makes the backend reject the whole message, readings included.
+  struct Diagnostics
+  {
+    int64_t rssi;     // dBm, sent within -127..0
+    int64_t uptimeS;  // seconds since boot, sent within 0..INT32_MAX
+    ResetReason resetReason;
+    int64_t freeHeap; // bytes, sent within 0..INT32_MAX
+    int64_t queued;   // samples buffered, sent within 0..120
+  };
+
   // Mirrors the backend's readingsTopic(): TOPIC_PREFIX + deviceId + TOPIC_SUFFIX.
   std::string readingsTopic(const char *deviceId);
 
@@ -29,7 +59,15 @@ namespace wire
 
   // The signed JSON body. A NAN parameter is omitted rather than sent as a zero or a null. wifiSsid is a plain
   // C string (this library stays Arduino-free); nullptr or "" omits the key entirely.
+  // This overload never emits "diag" or "sensors"; it is the pre-0.6.0 body shape the first seven golden
+  // vectors pin.
   std::string buildBody(const char *firmwareVersion, const char *wifiSsid, const Stamped *samples, size_t count);
+
+  // The 0.6.0 body: firmwareVersion, wifiSsid?, diag? (when `diag` is non-null), sensors? (when
+  // includeSensorStatus and count > 0, taken from the NEWEST sample in the batch — the backend stores the
+  // status "at the newest sample"), samples. That key order is signed bytes.
+  std::string buildBody(const char *firmwareVersion, const char *wifiSsid, const Diagnostics *diag,
+                        bool includeSensorStatus, const Stamped *samples, size_t count);
 
   // The bytes the HMAC covers: "<topic>\n<body>". Must match the backend's hmacHex().
   std::string signedInput(const std::string &topic, const std::string &body);
