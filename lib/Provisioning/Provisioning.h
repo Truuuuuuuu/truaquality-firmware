@@ -7,7 +7,7 @@
 // (Provisioning is in lib_ignore and nothing on the host includes it).
 #include <cstdint>
 
-// Lets a technician set a unit's WiFi and device identity from a phone, without reflashing, through a
+// Lets an admin set a unit's WiFi and device identity from a phone, without reflashing, through a
 // captive-portal hotspot (WiFiManager). WiFi credentials are stored by WiFiManager in the ESP32's own WiFi
 // NVS; DEVICE_ID/DEVICE_SECRET are stored in this module's own "unit" NVS namespace. See firmware/CLAUDE.md
 // for the field procedure (hotspot name, BOOT-hold, outage fallback).
@@ -15,7 +15,7 @@ namespace provisioning
 {
   struct Config
   {
-    // Shared by every unit; written in the technician's handbook, not printed on the enclosure.
+    // Shared by every unit; written in the admin's handbook, not printed on the enclosure.
     const char *setupApPassword;
   };
 

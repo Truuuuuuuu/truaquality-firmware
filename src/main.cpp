@@ -90,7 +90,7 @@ static size_t benchCommandLen = 0;
 // Single writer of the calibration from this console. Validation is not repeated here on purpose:
 // provisioning::storeTurbidityClearWaterMv() owns the plausible-window check and already logs its reason, so
 // a refusal leaves both NVS and the in-memory reference untouched. On success the running unit is told too,
-// so a technician can capture and then immediately see live NTU without a reboot.
+// so an admin can capture and then immediately see live NTU without a reboot.
 static void benchStoreCalibration(uint16_t clearWaterMv, const char *source)
 {
   if (!provisioning::storeTurbidityClearWaterMv(clearWaterMv))
@@ -296,7 +296,7 @@ void loop()
 
   provisioning::loop(WiFi.status() == WL_CONNECTED);
 
-  // Nothing else to do until a technician has provisioned WiFi + device identity through the setup hotspot.
+  // Nothing else to do until an admin has provisioned WiFi + device identity through the setup hotspot.
   if (!provisioning::isProvisioned())
   {
     return;

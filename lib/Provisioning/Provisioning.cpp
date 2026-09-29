@@ -124,7 +124,7 @@ namespace
   }
 
   // Fires when the "Setup" page is saved. Runs the same validation the portal's HTML `pattern` attributes
-  // already do client-side, since nothing stops a technician from bypassing them.
+  // already do client-side, since nothing stops an admin from bypassing them.
   void onSaveParams()
   {
     const char *idValue = deviceIdParam->getValue();
@@ -175,7 +175,7 @@ namespace
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     macInfoParam = new WiFiManagerParameter(macInfoHtml);
 
-    // Prefilled with the current device ID (blank on a fresh unit) so a technician only has to retype it when
+    // Prefilled with the current device ID (blank on a fresh unit) so an admin only has to retype it when
     // actually changing units, not on every secret rotation.
     deviceIdParam = new WiFiManagerParameter(
         "device_id", "Device ID (from the Devices page)", deviceIdBuf, DEVICE_ID_LEN,
@@ -275,7 +275,7 @@ namespace provisioning
 
     // D-17: exactly one line, and only when the calibration is unusable. An uncalibrated unit and a unit with
     // a dead turbidity sensor look identical from the dashboard - both report temperature and no turbidity -
-    // so the boot log is the only place a technician can tell the two apart, and it has to name which of the
+    // so the boot log is the only place an admin can tell the two apart, and it has to name which of the
     // two unusable cases this is.
     if (turbidityClearMv == 0)
     {
@@ -339,7 +339,7 @@ namespace provisioning
       return false;
     }
 
-    // Both results are checked because a "saved" line the technician trusts must mean it survives a reboot:
+    // Both results are checked because a "saved" line the admin trusts must mean it survives a reboot:
     // putUShort returns 0 on a full or failing NVS, and an unchecked write would leave the unit calibrated in
     // RAM only, silently reverting to "no turbidity" at the next power cycle.
     if (!prefs.begin("unit", false))

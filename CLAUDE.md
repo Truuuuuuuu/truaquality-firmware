@@ -47,7 +47,7 @@ same file and the same compiled image now, there's no per-unit build:
 - HiveMQ: `MQTT_HOST`, `MQTT_PORT`, and one MQTT credential (`MQTT_USERNAME` / `MQTT_PASSWORD`) shared by all
   units, created in the HiveMQ console.
 - `SETUP_AP_PASSWORD`: the WPA2 password for every unit's setup hotspot (see "Field provisioning" below).
-  Shared by all units, kept in the technician's handbook rather than printed on the enclosure.
+  Shared by all units, kept in the administrator's handbook rather than printed on the enclosure.
 - `REPORT_INTERVAL_MS`.
 
 `src/main.cpp` `#error`s if `unit_config.h` is missing. **Don't rename it to `config.h`:** on macOS's

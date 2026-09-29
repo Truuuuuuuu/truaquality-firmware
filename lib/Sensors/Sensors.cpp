@@ -83,7 +83,7 @@ namespace
     // implausible calibration, far above the reference, below the curve's range — already lives in
     // turbidity::ntuFromPinMv in one fixed order, pinned by native tests. A second opinion here would be a
     // second opinion nothing tests. Returning the field captureBurst() just computed, rather than
-    // recomputing, also guarantees the value that goes on the wire is the same number a technician sees in
+    // recomputing, also guarantees the value that goes on the wire is the same number an admin sees in
     // the diagnostics for that same burst.
     return lastDiagnostics.ntu;
   }
@@ -105,7 +105,7 @@ namespace sensors
     // Nothing else is needed here — in particular, no call that routes the internal reference out to a GPIO:
     // that targets an ADC2 pin and is pointless on a chip that already carries eFuse calibration.
     // No boot log either: the one line about an unusable calibration is Provisioning's, and saying it twice
-    // would make a technician hunt for two different faults.
+    // would make an admin hunt for two different faults.
     analogSetPinAttenuation(TURBIDITY_PIN, ADC_11db);
   }
 

@@ -42,7 +42,7 @@ namespace sensors
   // straight in. Provisioning owns storage and validation; this just receives the result.
   void setTurbidityCalibration(unsigned short clearWaterMv);
 
-  // One burst returned as SENSOR-side millivolts — the raw number a technician reads on the bench and the
+  // One burst returned as SENSOR-side millivolts — the raw number an admin reads on the bench and the
   // number a clear-water capture stores. NAN on a faulted pin, and deliberately NOT gated on calibration,
   // since this is what produces a calibration in the first place.
   float readTurbidityMillivolts();

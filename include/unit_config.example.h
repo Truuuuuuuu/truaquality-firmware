@@ -1,6 +1,6 @@
 // Copy this file to include/unit_config.h (gitignored) and fill it in. Unlike before, every unit gets the
 // same unit_config.h and the same compiled firmware image - WiFi and DEVICE_ID/DEVICE_SECRET are no longer
-// compile-time settings. A technician sets those per unit, in the field, through the setup hotspot the unit
+// compile-time settings. An admin sets those per unit, in the field, through the setup hotspot the unit
 // opens on first boot (see "Field provisioning" in firmware/CLAUDE.md).
 // (Not named config.h: on case-insensitive filesystems that collides with espMqttClient's Config.h.)
 #pragma once
@@ -15,8 +15,8 @@
 // 1 for HiveMQ Cloud (TLS, verified against ISRG Root X1). 0 only for a plaintext broker on a local network.
 #define MQTT_USE_TLS 1
 
-// WPA2 password for the "TruAquality-XXXX" setup hotspot every unit opens until it's provisioned (or while a
-// technician holds its BOOT button). Shared by every unit - write it in the technician's handbook, not on the
+// WPA2 password for the "TruAquality-XXXX" setup hotspot every unit opens until it's provisioned (or while an
+// admin holds its BOOT button). Shared by every unit - write it in the admin's handbook, not on the
 // enclosure. Must be at least 8 characters (WPA2's minimum) or the hotspot won't start.
 #define SETUP_AP_PASSWORD "change-me-setup-password"
 
