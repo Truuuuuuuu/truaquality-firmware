@@ -26,15 +26,20 @@ reflash.
 **Temperature is a real, verified sensor.** A DS18B20 waterproof probe on GPIO 4 (OneWire), verified
 end-to-end on a real ESP32 unit — readings land in the database and dashboard.
 
-**Turbidity is the second parameter, written but not yet bench-verified.** The module is the DFRobot
+**Turbidity is the second parameter, bench-characterized on one rig.** The module is the DFRobot
 **SEN0189** family (analog, 5 V supply, 0–4.5 V output). It is read on **GPIO34** (ADC1_CH6 — ADC2 belongs to
 WiFi, and GPIO34 is input-only so no internal pull-up can pull the divider off its ratio) through a
 **10 kΩ / 12 kΩ divider** with a 100 nF bypass to GND, and converted with the vendor quadratic evaluated on a
-ratio-normalized voltage. **The fault floor, the plausible clear-water window, the high-voltage margin and the
-NTU rounding step in `lib/TurbidityMath/TurbidityMath.h` are PROVISIONAL** — each is marked so in that header
-with its origin, and the bench session replaces them with measured values. Don't quote them as if they were
-measured, and don't invent numbers for them. The *alert thresholds* are a separate matter again: they are the
-backend's, set in Phase 4 from NTU-native sources, never the firmware's.
+ratio-normalized voltage. The 03-06 bench session (`.planning/phases/03-turbidity-sensor-read-bench-characterization/03-BENCH-RECORD.md`)
+replaced the fault floor (**250 mV** at the pin; unplugged reads 142 mV, the muddiest sample never below 357 mV)
+and the plausible clear-water window (**2870–3580 mV** sensor-side) in `lib/TurbidityMath/TurbidityMath.h`; the
+window is a property of that rig's USB-fed 5 V supply, so a unit with a different supply needs its own check.
+`HIGH_VOLTAGE_MARGIN` (0.15) was checked against the bench and kept. **`NTU_ROUND_STEP` (0.1) and the vendor
+curve are still PROVISIONAL and unvalidated** — there was no turbidimeter, so the NTU numbers are estimates,
+and the clear-water signal flips between two levels about 120 mV apart (cause unconfirmed), so clear water can
+read anywhere from 0 to several hundred NTU on that rig. Set the calibration with `cal set <median of a
+clear-water run>`, never a single-burst `cal capture`, and re-calibrate if the container or probe position
+changes. The *alert thresholds* are a separate matter: they are the backend's, never the firmware's.
 
 Adding a parameter means a field on `SensorSample`, a reader in `lib/Sensors/Sensors.cpp`, an `addValue` line
 in `lib/WireFormat/WireFormat.cpp`, and the same id in the backend's `PARAMETER_BOUNDS` and the frontend's
