@@ -33,12 +33,13 @@ namespace turbidity
   // the ADC's 11 dB range. Changing the resistors is the only thing that may change this line.
   constexpr float DIVIDER_RATIO = 12.0f / 22.0f;
 
-  // PROVISIONAL (research estimate, D-01) — the bench measures this from an unplugged signal wire, an
-  // unplugged 5 V supply and the muddiest sample, and Phase 3 does not close until the measured floor is
-  // here. Below it the signal or the supply is gone: R2 pulls the pin toward GND and an unguarded curve
-  // would report maximum turbidity for a dead sensor, which is exactly the false CRITICAL alert SENS-03
-  // exists to prevent.
-  constexpr float FAULT_FLOOR_PIN_MV = 200.0f;
+  // MEASURED (03-06 bench, D-01). With the signal wire or the 5 V supply unplugged the pin reads a constant
+  // 142 mV (runs 02 and 03, 121 and 124 rows); the muddiest real sample (40 caps of cornstarch stock, run 11)
+  // never went below 357.5 mV. 250 is a round number between them (midpoint 249.8), clear of both. Below it
+  // the signal or the supply is gone: R2 pulls the pin toward GND and an unguarded curve would report maximum
+  // turbidity for a dead sensor, which is exactly the false CRITICAL alert SENS-03 exists to prevent. Bench
+  // record: .planning/phases/03-turbidity-sensor-read-bench-characterization/03-BENCH-RECORD.md.
+  constexpr float FAULT_FLOOR_PIN_MV = 250.0f;
 
   // The DFRobot SEN0189 vendor curve, NTU = A*V^2 + B*V + C, valid for 2.5 V <= V <= 4.2 V sensor-side,
   // evaluated on a ratio-normalized voltage (D-05). PROVISIONAL as a block: if the bench data disagrees
@@ -62,20 +63,23 @@ namespace turbidity
   constexpr float CURVE_ZERO_OFFSET_NTU =
       CURVE_A * VENDOR_ZERO_V * VENDOR_ZERO_V + CURVE_B * VENDOR_ZERO_V + CURVE_C;
 
-  // PROVISIONAL plausible window for a stored clear-water reading (D-17), from DFRobot's "pure water
-  // outputs 4.1 +/- 0.3 V" at 10-50 C. A value outside it, or the 0 that NVS returns when the unit was
-  // never calibrated, means the calibration cannot be trusted — not that the water is turbid. The bench
-  // narrows this once real clones have been read in clean water.
-  // The minimum is lowered from the datasheet's 3800 to 3000 for the 03-06 session: the bench rig runs the
-  // module from the ESP32's 5V pin (4.57-4.69 V over USB, after the board's diode), and clear water read
-  // 3310-3433 mV sensor-side on the meter and on `cal show`, so 3800 refused a genuine clear-water capture.
-  // Still PROVISIONAL: 03-06 replaces both bounds with the spread measured across the session.
-  constexpr uint16_t CLEAR_WATER_MIN_MV = 3000;
-  constexpr uint16_t CLEAR_WATER_MAX_MV = 4400;
+  // MEASURED on one bench rig (03-06, D-17). Plausible window for a stored clear-water reference. A value
+  // outside it, or the 0 that NVS returns when the unit was never calibrated, means the calibration cannot
+  // be trusted — not that the water is turbid. The datasheet's "pure water outputs 4.1 +/- 0.3 V" (3800-4400)
+  // refused every clear-water capture on this rig: the module runs from the ESP32's 5V pin (4.5-4.7 V over
+  // USB, after the board's diode) and clear water read 3,025-3,428 mV sensor-side across the session (mean
+  // of the clear-water runs, two glasses, two days). The bounds are that spread plus 150 mV of margin, rounded
+  // to 10 mV: 3,025 - 150 -> 2870, 3,428 + 150 -> 3580. The container matters (the same water read 3,388 mV in
+  // one glass and 3,156 mV in another), so this window is a property of this rig's supply and geometry, not of
+  // the sensor model; a production unit with a regulated 5 V supply needs its own bench check.
+  constexpr uint16_t CLEAR_WATER_MIN_MV = 2870;
+  constexpr uint16_t CLEAR_WATER_MAX_MV = 3580;
 
-  // PROVISIONAL (D-03). A normalized voltage more than this fraction above the reference means the 5 V rail
-  // drifted up or the stored calibration is stale, so the reading is not trustworthy and must be NAN rather
-  // than a confident 0. The bench sets the real margin from the observed supply and clear-water drift.
+  // Checked against the bench (03-06, D-03): the largest excursion above the stored reference seen in any
+  // calibrated water run was 0.080 (a fraction of the reference), so a margin of at least 0.100 is needed for
+  // a working unit's normal two-level supply jump not to become a fault. 0.15 keeps that with headroom. A
+  // normalized voltage more than this fraction above the reference means the 5 V rail drifted up or the
+  // stored calibration is stale, so the reading is not trustworthy and must be NAN rather than a confident 0.
   constexpr float HIGH_VOLTAGE_MARGIN = 0.15f;
 
   // NOT provisional and NOT a bench number: a float-robustness guard and nothing else. Plan 06 must not
@@ -92,9 +96,13 @@ namespace turbidity
   // named bench-derived constant — never here.
   constexpr float ZERO_EPSILON_V = 0.0001f;
 
-  // PROVISIONAL (D-07). Rounding before serialization keeps the signed JSON bytes deterministic, which the
-  // wire-format parity fixture depends on; the step is tightened or loosened to the measured noise floor in
-  // plan 06 (the Arduino forum reports about +/-7 NTU of resolution on this sensor family).
+  // PROVISIONAL (D-07), deliberately left at 0.1 after the 03-06 bench. Rounding before serialization keeps
+  // the signed JSON bytes deterministic, which the wire-format parity fixture depends on. The bench measured
+  // the clear-water noise at 30.8-32.6 mV at the pin (standard deviation of filtered_pin_mv), but its NTU
+  // equivalent (about 250-315 NTU) comes from the unvalidated vendor curve evaluated outside its 2.5-4.2 V
+  // range, and most of it is the two-level supply jump (~120 mV sensor-side), which a separate 5 V supply
+  // may remove. Rounding to 500 NTU from that number would make the 25 NTU BFAR safe line unreadable, so the
+  // step stays until a turbidimeter validates the curve and the supply noise is fixed.
   constexpr float NTU_ROUND_STEP = 0.1f;
 
   // One ADC burst reduced to the three numbers the bench CSV (D-13) and the capture-stability check read.

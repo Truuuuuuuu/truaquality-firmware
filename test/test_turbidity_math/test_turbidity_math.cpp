@@ -20,7 +20,7 @@ namespace
   constexpr float NTU_TOLERANCE = 0.05f;
 
   // The calibrated clear-water reference most cases run against, sensor-side, inside the plausible window.
-  constexpr uint16_t CLEAR_MV = 4100;
+  constexpr uint16_t CLEAR_MV = 3200;
 
   // How far off a decision boundary every fixture is placed. ntuFromPinMv divides by DIVIDER_RATIO, divides
   // by the stored millivolts and multiplies by VENDOR_ZERO_V, so a fixture aimed *exactly* at a boundary
@@ -320,7 +320,7 @@ void test_classify_ok_exactly_when_ntu_is_finite(void)
   // The status the unit reports and whether it sends a value must never disagree: "ok" with no value, or a
   // value under a fault status, would contradict itself on the dashboard. Swept across every branch and
   // across calibrations at and around the window's edges.
-  const uint16_t calibrations[] = {0, 2999, 3000, 4100, 4400, 4401};
+  const uint16_t calibrations[] = {0, 2869, 2870, 3200, 3580, 3581};
   for (uint16_t clear : calibrations)
   {
     for (int pin = 0; pin <= 3000; pin += 5)
