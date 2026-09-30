@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "TurbidityMath.h"
+#include "TurbidityCalibration.h"
 
 // Pins the shape of the turbidity math, not its exact coefficient outputs: what an unplugged sensor
 // reports, what water muddier than the curve covers reports, what a unit sitting in its own calibrated
@@ -39,6 +40,44 @@ namespace
   {
     return vEff * (static_cast<float>(CLEAR_MV) / 1000.0f) / turbidity::VENDOR_ZERO_V * 1000.0f *
            turbidity::DIVIDER_RATIO;
+  }
+
+  // Bench-derived capture windows (D-01/D-03/D-04): 20 consecutive 1 Hz rows of the sensor_mv column from the
+  // 03-06 bench session, .planning/phases/03-turbidity-sensor-read-bench-characterization/bench/. Real data, so
+  // the stability and plausibility guards are pinned against what the rig actually produced, not a guess.
+
+  // 01-clear-water.csv, file lines 2-21: clear water flipping between the two supply levels (~120 mV apart).
+  constexpr float RUN01_CLEAR[20] = {3261.2f, 3383.9f, 3252.4f, 3256.5f, 3332.1f, 3254.6f, 3253.2f,
+                                     3259.3f, 3254.0f, 3384.7f, 3251.7f, 3253.2f, 3379.8f, 3319.9f,
+                                     3382.8f, 3251.5f, 3383.8f, 3252.0f, 3254.4f, 3383.6f};
+
+  // 12-clear-water-repeat-newglass.csv, file lines 2-21: the probe still settling (a ~860 mV dip).
+  constexpr float RUN12_SETTLING[20] = {2376.7f, 2386.7f, 2386.1f, 2093.0f, 1983.3f, 1800.2f, 1536.8f,
+                                        2381.7f, 2304.4f, 2307.3f, 2394.3f, 2390.0f, 2306.2f, 2389.3f,
+                                        2372.4f, 2309.8f, 2395.4f, 2303.8f, 2302.4f, 2390.1f};
+
+  // 12-clear-water-repeat-newglass.csv, file lines 9-28: steady, but below the plausible clear-water window.
+  constexpr float RUN12_STEADY_LOW[20] = {2381.7f, 2304.4f, 2307.3f, 2394.3f, 2390.0f, 2306.2f, 2389.3f,
+                                          2372.4f, 2309.8f, 2395.4f, 2303.8f, 2302.4f, 2390.1f, 2390.2f,
+                                          2393.1f, 2308.8f, 2308.3f, 2387.9f, 2310.1f, 2324.6f};
+
+  // 07-dose1cap-newglass.csv, file lines 2-21: one cap of cornstarch stock — slightly turbid water.
+  constexpr float RUN07_ONE_CAP[20] = {2863.6f, 2972.1f, 2972.5f, 2968.6f, 2859.9f, 2984.2f, 2982.9f,
+                                       2979.3f, 2943.4f, 2954.4f, 2979.8f, 2971.6f, 2973.5f, 2978.3f,
+                                       2900.5f, 2983.0f, 2994.8f, 2998.4f, 2992.8f, 2987.8f};
+
+  // A constant capture window, for the synthetic boundary cases.
+  void fillWindow(float *window, float value)
+  {
+    for (size_t i = 0; i < turbidity::cal::CAPTURE_WINDOW_SAMPLES; i++)
+    {
+      window[i] = value;
+    }
+  }
+
+  bool isOutcome(const float *window, size_t count, turbidity::cal::CaptureOutcome expected)
+  {
+    return turbidity::cal::evaluateCapture(window, count).outcome == expected;
   }
 }
 
@@ -333,6 +372,280 @@ void test_classify_ok_exactly_when_ntu_is_finite(void)
   }
 }
 
+void test_cal_median_of_even_window_is_mean_of_middle_pair(void)
+{
+  // D-01: the capture decision is the median of the 20-sample window. 20 is even, so the median is the mean
+  // of the 10th and 11th sorted values; an odd count takes the middle one.
+  const float ramp[20] = {19, 3, 11, 0, 7, 15, 1, 18, 5, 13, 9, 17, 2, 14, 6, 10, 4, 16, 8, 12};
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.5f, turbidity::cal::medianOf(ramp, 20));
+  const float odd[5] = {50, 10, 40, 20, 30};
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 30.0f, turbidity::cal::medianOf(odd, 5));
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 3257.9f, turbidity::cal::medianOf(RUN01_CLEAR, 20));
+}
+
+void test_cal_median_refuses_empty_oversized_or_nan_input(void)
+{
+  // D-01 / T-05-07: the median copies into a 20-entry local buffer, so a larger count must be refused rather
+  // than written past it; an empty or NAN-bearing window has no honest median.
+  float big[21];
+  for (size_t i = 0; i < 21; i++)
+  {
+    big[i] = 3200.0f;
+  }
+  TEST_ASSERT_FLOAT_IS_NAN(turbidity::cal::medianOf(nullptr, 20));
+  TEST_ASSERT_FLOAT_IS_NAN(turbidity::cal::medianOf(big, 0));
+  TEST_ASSERT_FLOAT_IS_NAN(turbidity::cal::medianOf(big, 21));
+  float withNan[3] = {3200.0f, NAN, 3210.0f};
+  TEST_ASSERT_FLOAT_IS_NAN(turbidity::cal::medianOf(withNan, 3));
+}
+
+void test_cal_median_does_not_reorder_the_callers_window(void)
+{
+  // T-05-07: the portal passes its live ring buffer; sorting it in place would scramble the order the next
+  // sample is written into and the live state would be judged on a shuffled window.
+  float window[20];
+  for (size_t i = 0; i < 20; i++)
+  {
+    window[i] = RUN01_CLEAR[i];
+  }
+  (void)turbidity::cal::medianOf(window, 20);
+  for (size_t i = 0; i < 20; i++)
+  {
+    TEST_ASSERT_EQUAL_FLOAT(RUN01_CLEAR[i], window[i]);
+  }
+}
+
+void test_cal_spread_is_max_minus_min(void)
+{
+  // D-03: the stability measure is max minus min of the window, sensor-side mV.
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 133.2f, turbidity::cal::spreadOf(RUN01_CLEAR, 20));
+  const float two[2] = {3200.0f, 3350.0f};
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 150.0f, turbidity::cal::spreadOf(two, 2));
+  TEST_ASSERT_FLOAT_IS_NAN(turbidity::cal::spreadOf(nullptr, 20));
+  TEST_ASSERT_FLOAT_IS_NAN(turbidity::cal::spreadOf(two, 0));
+  const float withNan[2] = {3200.0f, NAN};
+  TEST_ASSERT_FLOAT_IS_NAN(turbidity::cal::spreadOf(withNan, 2));
+}
+
+void test_cal_capture_wrong_count_or_nan_is_signal_lost(void)
+{
+  // D-01 / T-05-06: fail closed. A window that is not exactly 20 samples is not a capture, and a NAN means
+  // the signal is gone — which wins even over a 900 mV swing that would otherwise read as Unstable.
+  float window[20];
+  fillWindow(window, 3200.0f);
+  TEST_ASSERT_TRUE(isOutcome(nullptr, 20, turbidity::cal::CaptureOutcome::SignalLost));
+  TEST_ASSERT_TRUE(isOutcome(window, 19, turbidity::cal::CaptureOutcome::SignalLost));
+  TEST_ASSERT_EQUAL_UINT16(0, turbidity::cal::evaluateCapture(window, 19).medianMv);
+
+  window[0] = NAN;
+  window[5] = 3200.0f - 450.0f;
+  window[6] = 3200.0f + 450.0f;
+  TEST_ASSERT_TRUE(isOutcome(window, 20, turbidity::cal::CaptureOutcome::SignalLost));
+  TEST_ASSERT_EQUAL_UINT16(0, turbidity::cal::evaluateCapture(window, 20).medianMv);
+}
+
+void test_cal_capture_spread_boundary_is_inclusive_at_150(void)
+{
+  // D-03: 150.0 mV exactly is accepted, 150.1 is refused as unstable.
+  float window[20];
+  fillWindow(window, 3200.0f);
+  window[19] = 3350.0f;
+  const turbidity::cal::CaptureResult atLimit = turbidity::cal::evaluateCapture(window, 20);
+  TEST_ASSERT_TRUE(atLimit.outcome == turbidity::cal::CaptureOutcome::Accepted);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 150.0f, atLimit.spreadMv);
+
+  window[19] = 3350.1f;
+  const turbidity::cal::CaptureResult over = turbidity::cal::evaluateCapture(window, 20);
+  TEST_ASSERT_TRUE(over.outcome == turbidity::cal::CaptureOutcome::Unstable);
+  TEST_ASSERT_TRUE(over.spreadMv > 150.0f);
+}
+
+void test_cal_capture_plausibility_window_boundaries(void)
+{
+  // D-04: the median must sit inside turbidity::isPlausibleClearWaterMv's window (2870-3580 sensor mV).
+  float window[20];
+  fillWindow(window, 3200.0f);
+  const turbidity::cal::CaptureResult flat = turbidity::cal::evaluateCapture(window, 20);
+  TEST_ASSERT_TRUE(flat.outcome == turbidity::cal::CaptureOutcome::Accepted);
+  TEST_ASSERT_EQUAL_UINT16(3200, flat.medianMv);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, flat.spreadMv);
+
+  fillWindow(window, static_cast<float>(turbidity::CLEAR_WATER_MIN_MV));
+  TEST_ASSERT_TRUE(isOutcome(window, 20, turbidity::cal::CaptureOutcome::Accepted));
+  TEST_ASSERT_EQUAL_UINT16(turbidity::CLEAR_WATER_MIN_MV, turbidity::cal::evaluateCapture(window, 20).medianMv);
+  fillWindow(window, static_cast<float>(turbidity::CLEAR_WATER_MAX_MV));
+  TEST_ASSERT_TRUE(isOutcome(window, 20, turbidity::cal::CaptureOutcome::Accepted));
+
+  fillWindow(window, static_cast<float>(turbidity::CLEAR_WATER_MIN_MV - 1));
+  const turbidity::cal::CaptureResult low = turbidity::cal::evaluateCapture(window, 20);
+  TEST_ASSERT_TRUE(low.outcome == turbidity::cal::CaptureOutcome::Implausible);
+  TEST_ASSERT_EQUAL_UINT16(turbidity::CLEAR_WATER_MIN_MV - 1, low.medianMv);
+  fillWindow(window, static_cast<float>(turbidity::CLEAR_WATER_MAX_MV + 1));
+  TEST_ASSERT_TRUE(isOutcome(window, 20, turbidity::cal::CaptureOutcome::Implausible));
+
+  // Probe in air: the bench read about 2716 mV sensor-side, steady — refused as implausible, not stored.
+  fillWindow(window, 2716.0f);
+  TEST_ASSERT_TRUE(isOutcome(window, 20, turbidity::cal::CaptureOutcome::Implausible));
+}
+
+void test_cal_capture_bench_run01_clear_water_is_accepted(void)
+{
+  // D-01/D-03/D-04: real clear water with the two-level supply jump is still a good capture.
+  const turbidity::cal::CaptureResult r = turbidity::cal::evaluateCapture(RUN01_CLEAR, 20);
+  TEST_ASSERT_TRUE(r.outcome == turbidity::cal::CaptureOutcome::Accepted);
+  TEST_ASSERT_EQUAL_UINT16(3258, r.medianMv);
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 133.2f, r.spreadMv);
+}
+
+void test_cal_capture_bench_run12_settling_is_unstable_before_implausible(void)
+{
+  // D-03 before D-04: this window is also below the plausible window, but a median of a moving window means
+  // nothing, so Unstable must be the answer the admin sees ("wait"), not Implausible.
+  const turbidity::cal::CaptureResult r = turbidity::cal::evaluateCapture(RUN12_SETTLING, 20);
+  TEST_ASSERT_TRUE(r.outcome == turbidity::cal::CaptureOutcome::Unstable);
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 858.6f, r.spreadMv);
+}
+
+void test_cal_capture_bench_run12_steady_low_is_implausible(void)
+{
+  // D-04: steady (spread 93 mV) but far below the window — refused, and the median is reported so the portal
+  // can tell the admin what it saw.
+  const turbidity::cal::CaptureResult r = turbidity::cal::evaluateCapture(RUN12_STEADY_LOW, 20);
+  TEST_ASSERT_TRUE(r.outcome == turbidity::cal::CaptureOutcome::Implausible);
+  TEST_ASSERT_EQUAL_UINT16(2349, r.medianMv);
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 93.0f, r.spreadMv);
+}
+
+void test_cal_capture_bench_run07_one_cap_turbid_is_accepted_known_limit(void)
+{
+  // KNOWN LIMIT (T-05-09, accepted): one cap of cornstarch stock is steady and inside the plausible window,
+  // so it passes both guards and would be stored as "clear water". Pinned so the limit is disclosed, not
+  // hidden; the guards cannot tell slightly turbid water from clear water on this rig.
+  const turbidity::cal::CaptureResult r = turbidity::cal::evaluateCapture(RUN07_ONE_CAP, 20);
+  TEST_ASSERT_TRUE(r.outcome == turbidity::cal::CaptureOutcome::Accepted);
+  TEST_ASSERT_EQUAL_UINT16(2976, r.medianMv);
+}
+
+void test_cal_live_state_uses_the_capture_spread_rule(void)
+{
+  // D-06: the live indicator and the capture decision share one rule, so "steady" on screen means a capture
+  // taken now would pass the stability check.
+  float window[20];
+  fillWindow(window, 3200.0f);
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(nullptr, 0) == turbidity::cal::LiveState::Settling);
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(window, 0) == turbidity::cal::LiveState::Settling);
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(window, 10) == turbidity::cal::LiveState::Settling);
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(window, 20) == turbidity::cal::LiveState::Steady);
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(RUN01_CLEAR, 20) == turbidity::cal::LiveState::Steady);
+
+  // Unstable is reported as soon as the filled part is too wide, even before 20 samples.
+  window[3] = 3350.1f;
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(window, 5) == turbidity::cal::LiveState::Unstable);
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(RUN12_SETTLING, 20) == turbidity::cal::LiveState::Unstable);
+
+  // A NAN in the filled part is signal lost; one outside the filled part is not looked at.
+  fillWindow(window, 3200.0f);
+  window[2] = NAN;
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(window, 3) == turbidity::cal::LiveState::SignalLost);
+  TEST_ASSERT_TRUE(turbidity::cal::liveState(window, 2) == turbidity::cal::LiveState::Settling);
+}
+
+void test_cal_manual_blank_means_keep_never_zero(void)
+{
+  // D-09 / T-05-05: a submitted empty field must never store 0 (which reads as "never calibrated").
+  const char *blanks[] = {nullptr, "", "   ", "\t", " \t "};
+  for (const char *text : blanks)
+  {
+    const turbidity::cal::ManualResult r = turbidity::cal::parseManualMv(text);
+    TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Keep);
+    TEST_ASSERT_EQUAL_UINT16(0, r.mv);
+  }
+}
+
+void test_cal_manual_digits_set_after_trim(void)
+{
+  // D-09: typed digits, with surrounding spaces or tabs trimmed, set the value when inside the window.
+  turbidity::cal::ManualResult r = turbidity::cal::parseManualMv("3100");
+  TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
+  TEST_ASSERT_EQUAL_UINT16(3100, r.mv);
+  r = turbidity::cal::parseManualMv(" 3100 ");
+  TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
+  TEST_ASSERT_EQUAL_UINT16(3100, r.mv);
+  r = turbidity::cal::parseManualMv("\t3100\t");
+  TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
+  TEST_ASSERT_EQUAL_UINT16(3100, r.mv);
+  r = turbidity::cal::parseManualMv("2870");
+  TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
+  TEST_ASSERT_EQUAL_UINT16(2870, r.mv);
+  r = turbidity::cal::parseManualMv("3580");
+  TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
+  TEST_ASSERT_EQUAL_UINT16(3580, r.mv);
+}
+
+void test_cal_manual_rejects_non_digits_signs_decimals_and_long_input(void)
+{
+  // D-09 / T-05-05: digits only — no sign, no decimal point, no inner space, at most 5 digits.
+  const char *bad[] = {"31a", "-5", "+3100", "3.1", "999999", "3 100"};
+  for (const char *text : bad)
+  {
+    TEST_ASSERT_TRUE(turbidity::cal::parseManualMv(text).kind == turbidity::cal::ManualKind::NotANumber);
+  }
+}
+
+void test_cal_manual_out_of_window_is_implausible(void)
+{
+  // D-04 applied to D-09: a typed number outside the plausible window is refused, and a 5-digit value above
+  // 65535 cannot fit the stored uShort, so it is implausible with mv 0 rather than wrapped.
+  const turbidity::cal::ManualResult huge = turbidity::cal::parseManualMv("70000");
+  TEST_ASSERT_TRUE(huge.kind == turbidity::cal::ManualKind::Implausible);
+  TEST_ASSERT_EQUAL_UINT16(0, huge.mv);
+  const char *outside[] = {"0", "2000", "2869", "3581"};
+  for (const char *text : outside)
+  {
+    TEST_ASSERT_TRUE(turbidity::cal::parseManualMv(text).kind == turbidity::cal::ManualKind::Implausible);
+  }
+}
+
+void test_cal_stamp_unsynced_clock_is_date_unknown(void)
+{
+  // D-08 / T-05-08: an unsynced clock gives 0 ("date unknown"), never a fake 1970 date; anything that does
+  // not fit the stored uint32 is also 0.
+  TEST_ASSERT_EQUAL_UINT32(0, turbidity::cal::calibrationStamp(0));
+  TEST_ASSERT_EQUAL_UINT32(0, turbidity::cal::calibrationStamp(1700000000LL));
+  TEST_ASSERT_EQUAL_UINT32(0, turbidity::cal::calibrationStamp(-5LL));
+  TEST_ASSERT_EQUAL_UINT32(0, turbidity::cal::calibrationStamp(4294967296LL));
+  TEST_ASSERT_EQUAL_UINT32(1700000001UL, turbidity::cal::calibrationStamp(1700000001LL));
+  TEST_ASSERT_EQUAL_UINT32(1759300000UL, turbidity::cal::calibrationStamp(1759300000LL));
+  TEST_ASSERT_EQUAL_UINT32(4294967295UL, turbidity::cal::calibrationStamp(4294967295LL));
+}
+
+void test_cal_tokens_cover_every_enumerator(void)
+{
+  // The portal's JSON speaks these tokens; each enumerator has its own, and an out-of-range value falls to a
+  // fault token, never to a success one.
+  using turbidity::cal::CaptureOutcome;
+  using turbidity::cal::LiveState;
+  using turbidity::cal::ManualKind;
+  TEST_ASSERT_EQUAL_STRING("accepted", turbidity::cal::captureOutcomeToken(CaptureOutcome::Accepted));
+  TEST_ASSERT_EQUAL_STRING("signal_lost", turbidity::cal::captureOutcomeToken(CaptureOutcome::SignalLost));
+  TEST_ASSERT_EQUAL_STRING("unstable", turbidity::cal::captureOutcomeToken(CaptureOutcome::Unstable));
+  TEST_ASSERT_EQUAL_STRING("implausible", turbidity::cal::captureOutcomeToken(CaptureOutcome::Implausible));
+  TEST_ASSERT_EQUAL_STRING("signal_lost",
+                           turbidity::cal::captureOutcomeToken(static_cast<CaptureOutcome>(99)));
+
+  TEST_ASSERT_EQUAL_STRING("settling", turbidity::cal::liveStateToken(LiveState::Settling));
+  TEST_ASSERT_EQUAL_STRING("steady", turbidity::cal::liveStateToken(LiveState::Steady));
+  TEST_ASSERT_EQUAL_STRING("unstable", turbidity::cal::liveStateToken(LiveState::Unstable));
+  TEST_ASSERT_EQUAL_STRING("signal_lost", turbidity::cal::liveStateToken(LiveState::SignalLost));
+  TEST_ASSERT_EQUAL_STRING("signal_lost", turbidity::cal::liveStateToken(static_cast<LiveState>(99)));
+
+  TEST_ASSERT_EQUAL_STRING("keep", turbidity::cal::manualKindToken(ManualKind::Keep));
+  TEST_ASSERT_EQUAL_STRING("set", turbidity::cal::manualKindToken(ManualKind::Set));
+  TEST_ASSERT_EQUAL_STRING("not_a_number", turbidity::cal::manualKindToken(ManualKind::NotANumber));
+  TEST_ASSERT_EQUAL_STRING("implausible", turbidity::cal::manualKindToken(ManualKind::Implausible));
+  TEST_ASSERT_EQUAL_STRING("not_a_number", turbidity::cal::manualKindToken(static_cast<ManualKind>(99)));
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -358,5 +671,23 @@ int main(int argc, char **argv)
   RUN_TEST(test_classify_far_above_reference_is_over_range);
   RUN_TEST(test_classify_usable_readings_are_ok);
   RUN_TEST(test_classify_ok_exactly_when_ntu_is_finite);
+  RUN_TEST(test_cal_median_of_even_window_is_mean_of_middle_pair);
+  RUN_TEST(test_cal_median_refuses_empty_oversized_or_nan_input);
+  RUN_TEST(test_cal_median_does_not_reorder_the_callers_window);
+  RUN_TEST(test_cal_spread_is_max_minus_min);
+  RUN_TEST(test_cal_capture_wrong_count_or_nan_is_signal_lost);
+  RUN_TEST(test_cal_capture_spread_boundary_is_inclusive_at_150);
+  RUN_TEST(test_cal_capture_plausibility_window_boundaries);
+  RUN_TEST(test_cal_capture_bench_run01_clear_water_is_accepted);
+  RUN_TEST(test_cal_capture_bench_run12_settling_is_unstable_before_implausible);
+  RUN_TEST(test_cal_capture_bench_run12_steady_low_is_implausible);
+  RUN_TEST(test_cal_capture_bench_run07_one_cap_turbid_is_accepted_known_limit);
+  RUN_TEST(test_cal_live_state_uses_the_capture_spread_rule);
+  RUN_TEST(test_cal_manual_blank_means_keep_never_zero);
+  RUN_TEST(test_cal_manual_digits_set_after_trim);
+  RUN_TEST(test_cal_manual_rejects_non_digits_signs_decimals_and_long_input);
+  RUN_TEST(test_cal_manual_out_of_window_is_implausible);
+  RUN_TEST(test_cal_stamp_unsynced_clock_is_date_unknown);
+  RUN_TEST(test_cal_tokens_cover_every_enumerator);
   return UNITY_END();
 }
