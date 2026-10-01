@@ -90,8 +90,8 @@ static size_t benchCommandLen = 0;
 
 // Single writer of the calibration from this console. Validation is not repeated here on purpose:
 // provisioning::storeTurbidityClearWaterMv() owns the plausible-window check and already logs its reason, so
-// a refusal leaves both NVS and the in-memory reference untouched. On success the running unit is told too,
-// so an admin can capture and then immediately see live NTU without a reboot.
+// a refusal leaves both NVS and the in-memory reference untouched. On success that same door stamps the date
+// and applies the value to the running sensor code, so live NTU follows at once without a reboot.
 static void benchStoreCalibration(uint16_t clearWaterMv, const char *source)
 {
   if (!provisioning::storeTurbidityClearWaterMv(clearWaterMv))
@@ -99,7 +99,6 @@ static void benchStoreCalibration(uint16_t clearWaterMv, const char *source)
     Serial.printf("[bench] %s refused %u mV, nothing stored (the [provisioning] line above says why)\n", source, clearWaterMv);
     return;
   }
-  sensors::setTurbidityCalibration(clearWaterMv);
   Serial.printf("[bench] %s stored clear-water reference %u mV\n", source, clearWaterMv);
 }
 
@@ -263,12 +262,22 @@ static void benchPump()
 }
 #endif
 
+// NTU of the burst sensors::readTurbidityMillivolts() just took, handed to Provisioning's calibration sampler.
+// Read back from the diagnostics rather than worked out here: main.cpp does no turbidity arithmetic of its own.
+static float lastTurbidityNtu()
+{
+  return sensors::lastTurbidityDiagnostics().ntu;
+}
+
 void setup()
 {
   Serial.begin(115200);
   sensors::begin();
   provisioning::begin(provisioning::Config{
       SETUP_AP_PASSWORD,
+      sensors::readTurbidityMillivolts,
+      lastTurbidityNtu,
+      sensors::setTurbidityCalibration,
   });
 
   // After provisioning::begin(), never before it: Provisioning owns the "unit" NVS namespace and only reads

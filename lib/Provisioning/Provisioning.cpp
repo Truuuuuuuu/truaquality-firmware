@@ -1,5 +1,6 @@
 #include "Provisioning.h"
 
+#include "TurbidityCalibration.h"
 #include "TurbidityMath.h"
 
 #include <Arduino.h>
@@ -8,6 +9,7 @@
 #include <WiFiManager.h>
 #include <cctype>
 #include <cstring>
+#include <ctime>
 
 namespace
 {
@@ -38,6 +40,8 @@ namespace
   // calibration lives here rather than in lib/Sensors because this module already owns the "unit" namespace;
   // keeping every Preferences call in one file is what lets Sensors stay a pure hardware reader.
   uint16_t turbidityClearMv = 0;
+  // When turbidityClearMv was stored, Unix seconds; 0 = date unknown (D-08). Kept beside the value it dates.
+  uint32_t turbidityCalAt = 0;
 
   char apName[24] = {0};
   char macInfoHtml[64] = {0};
@@ -124,6 +128,9 @@ namespace
   {
     prefs.begin("unit", true);
     turbidityClearMv = prefs.getUShort("turb_clear_mv", 0);
+    // 11 characters, under the same 15-character cap. Missing on a unit calibrated before Phase 5, which reads
+    // back as 0 = "date unknown" - exactly what such a unit should show.
+    turbidityCalAt = prefs.getUInt("turb_cal_at", 0);
     prefs.end();
   }
 
@@ -344,6 +351,11 @@ namespace provisioning
     return turbidityClearMv;
   }
 
+  uint32_t turbidityCalibratedAt()
+  {
+    return turbidityCalAt;
+  }
+
   bool storeTurbidityClearWaterMv(uint16_t clearWaterMv)
   {
     // Validated before the write, not after the read alone: this function is the only door into the key, so
@@ -366,15 +378,42 @@ namespace provisioning
       return false;
     }
     const size_t written = prefs.putUShort("turb_clear_mv", clearWaterMv);
-    prefs.end();
     if (written != sizeof(uint16_t))
     {
+      prefs.end();
       Serial.println("[provisioning] calibration NOT saved: NVS write failed");
       return false;
     }
+    // Value first, then the date it was stored. A unit that has not synced NTP (an unprovisioned one never
+    // does) gets 0 = "date unknown" from calibrationStamp rather than a 1970 date. If only this second write
+    // fails the value is kept - it is valid and already on flash - but this run reports "date unknown" so the
+    // screen never pairs a newer value with an older date.
+    const uint32_t stamp = turbidity::cal::calibrationStamp(static_cast<long long>(time(nullptr)));
+    const size_t stampWritten = prefs.putUInt("turb_cal_at", stamp);
+    prefs.end();
 
     turbidityClearMv = clearWaterMv;
-    Serial.printf("[provisioning] turbidity calibration saved: %u mV\n", static_cast<unsigned>(clearWaterMv));
+    if (stampWritten != sizeof(uint32_t))
+    {
+      turbidityCalAt = 0;
+      Serial.println("[provisioning] calibration date NOT saved: NVS write failed");
+    }
+    else
+    {
+      turbidityCalAt = stamp;
+      if (stamp == 0)
+      {
+        Serial.println("[provisioning] calibration date unknown: clock not set");
+      }
+    }
+    Serial.printf("[provisioning] turbidity calibration saved: %u mV at %lu\n", static_cast<unsigned>(clearWaterMv),
+                  static_cast<unsigned long>(turbidityCalAt));
+
+    // Applied here, inside the door, so no caller can store a value and forget to make it live.
+    if (config.applyTurbidityCalibration != nullptr)
+    {
+      config.applyTurbidityCalibration(clearWaterMv);
+    }
     return true;
   }
 
