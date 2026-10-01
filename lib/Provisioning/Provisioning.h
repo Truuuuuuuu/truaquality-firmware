@@ -43,7 +43,8 @@ namespace provisioning
   bool storeTurbidityClearWaterMv(uint16_t clearWaterMv);
 
   // Call on every loop(): drives the captive portal while it's open, watches for a held BOOT button or a long
-  // WiFi outage to reopen it, and restarts the unit once a fresh WiFi + identity pair has been saved.
+  // WiFi outage to reopen it, and restarts the unit only after WiFi or device identity was saved in the current
+  // portal session - so BOOT-hold on an installed unit keeps the hotspot open for recalibration.
   void loop(bool wifiConnected);
 
   // True while the setup hotspot is up. Callers should skip anything that touches WiFi.mode()/begin() while

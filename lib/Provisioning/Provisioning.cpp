@@ -50,6 +50,10 @@ namespace
   unsigned long buttonPressStartMs = 0;
   unsigned long disconnectedSinceMs = 0;
   bool restartPending = false;
+  // The unit restarts to apply a freshly saved WiFi/identity pair, never merely because the portal is open. An
+  // installed unit opened by BOOT-hold is already provisioned, so a rule keyed on "portal open + provisioned"
+  // closed its portal about 2 s after it opened and left no time to recalibrate.
+  bool savedThisSession = false;
   unsigned long restartAtMs = 0;
   unsigned long lastBlinkMs = 0;
   bool ledState = false;
@@ -164,7 +168,16 @@ namespace
       deviceSecretBuf[sizeof(deviceSecretBuf) - 1] = '\0';
     }
     identityPresent = isValidDeviceId(deviceIdBuf) && isValidDeviceSecret(deviceSecretBuf);
+    savedThisSession = true;
     Serial.println("[provisioning] device identity saved");
+  }
+
+  // Fires after the WiFi page is saved. With breakAfterConfig WiFiManager also calls it when the connection
+  // attempt fails, which is fine: the credentials were still written and a restart retries them cleanly.
+  void onSaveWifi()
+  {
+    savedThisSession = true;
+    Serial.println("[provisioning] WiFi saved");
   }
 
   void setupPortalParams()
@@ -297,6 +310,11 @@ namespace provisioning
     // main.cpp's loop-driven reopen logic below stays in control instead of WiFiManager looping on its own.
     wm.setBreakAfterConfig(true);
     wm.setSaveParamsCallback(onSaveParams);
+    wm.setSaveConfigCallback(onSaveWifi);
+    // The timed BOOT-hold/outage portal otherwise closes at 5 min even while an admin is watching a page,
+    // because only WiFiManager's own handlers count as "accessed". With this it stays open while any station is
+    // joined to the hotspot - trust is the same as the Setup page: whoever holds SETUP_AP_PASSWORD.
+    wm.setAPClientCheck(true);
     wm.setParamsPage(true);
     setupPortalParams();
 
@@ -381,9 +399,9 @@ namespace provisioning
       openPortal(0);
     }
 
-    if (wm.getConfigPortalActive() && isProvisioned() && !restartPending)
+    if (savedThisSession && isProvisioned() && !restartPending)
     {
-      Serial.println("[provisioning] WiFi + device identity saved, restarting");
+      Serial.println("[provisioning] WiFi or device identity saved, restarting");
       restartPending = true;
       restartAtMs = millis() + RESTART_DELAY_MS;
     }
