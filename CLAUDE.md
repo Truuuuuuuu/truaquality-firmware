@@ -87,6 +87,10 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
   outage lasts, so a unit nobody can reach in person still has a way back online.
 - A plain `pio run -t upload` leaves NVS (so the saved WiFi/identity) alone. Only `pio run -t erase` wipes it —
   use that for "fresh unit" testing.
+- **NVS and flash are not encrypted** (no flash encryption / secure boot: both burn one-way eFuses, out of
+  capstone scope). Anyone holding a unit can read its `DEVICE_SECRET`, WiFi password and the shared HiveMQ
+  credential compiled from `unit_config.h`. The stolen-unit procedure (disable, rotate the device secret, rotate
+  the broker credential) is in root `SECURITY_PERFORMANCE_AUDIT.md`, finding S8.
 
 ## Commands
 
