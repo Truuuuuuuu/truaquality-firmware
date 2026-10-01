@@ -37,9 +37,13 @@ window is a property of that rig's USB-fed 5 V supply, so a unit with a differen
 `HIGH_VOLTAGE_MARGIN` (0.15) was checked against the bench and kept. **`NTU_ROUND_STEP` (0.1) and the vendor
 curve are still PROVISIONAL and unvalidated** — there was no turbidimeter, so the NTU numbers are estimates,
 and the clear-water signal flips between two levels about 120 mV apart (cause unconfirmed), so clear water can
-read anywhere from 0 to several hundred NTU on that rig. Set the calibration with `cal set <median of a
-clear-water run>`, never a single-burst `cal capture`, and re-calibrate if the container or probe position
-changes. The *alert thresholds* are a separate matter: they are the backend's, never the firmware's.
+read anywhere from 0 to several hundred NTU on that rig. **Calibrate from the setup portal's Calibrate screen**
+(or, on the bench image, `cal capture`): both take the **median of 20 one-second samples** and refuse an
+unstable signal (spread over 150 mV sensor-side), an implausible one (median outside 2870–3580 mV) or a lost one,
+because a single burst can land on either of the two levels and a turbid or disconnected probe must never become
+the reference. `cal set <mV>` and the portal's manual field go through the same window. Re-calibrate if the
+container or probe position changes. The *alert thresholds* are a separate matter: they are the backend's, never
+the firmware's.
 
 Adding a parameter means a field on `SensorSample`, a reader in `lib/Sensors/Sensors.cpp`, an `addValue` line
 in `lib/WireFormat/WireFormat.cpp`, and the same id in the backend's `PARAMETER_BOUNDS` and the frontend's
@@ -71,17 +75,35 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
 
 - **Unprovisioned** (no saved WiFi, or no saved device identity): the unit opens its own WiFi hotspot,
   `TruAquality-XXXX` (`XXXX` = the last two bytes of its MAC, also printed in the serial log at boot), secured
-  with `SETUP_AP_PASSWORD`. Joining it from a phone pops up a captive-portal setup page with two screens:
-  "Configure WiFi" (network + password, saved by WiFiManager into the ESP32's own WiFi NVS) and "Setup"
+  with `SETUP_AP_PASSWORD`. Joining it from a phone pops up a captive-portal setup page with three screens:
+  "Configure WiFi" (network + password, saved by WiFiManager into the ESP32's own WiFi NVS), "Setup"
   (Device ID + Device secret, copied from the Devices page's registration/rotation dialog, saved into this
-  module's own `unit` NVS namespace). The onboard LED (GPIO 2) blinks fast the whole time; the unit takes no
-  readings until both are saved, at which point it restarts.
+  module's own `unit` NVS namespace) and "Calibrate" (turbidity clear-water reference, below). The onboard LED
+  (GPIO 2) blinks fast the whole time; the unit takes no readings until WiFi and identity are both saved, at
+  which point it restarts. Calibration is not required to finish setup.
 - **Provisioned:** the unit joins its saved WiFi and runs exactly as before.
-- **Re-entering setup on a working unit** (pond router replaced, secret rotated on the Devices page, …): hold
-  the BOOT button (GPIO 0) for 5 seconds. The hotspot reopens for 5 minutes; sampling and the MQTT buffer keep
-  running the whole time. **Press it after power-on, not during** — held down while powering up, GPIO 0 instead
-  drops the chip into its ROM download mode. A waterproof button wired from GPIO 0 to GND on the enclosure
-  needs no code change.
+- **Calibrate screen** (`/cal`, a menu button added through WiFiManager's custom menu HTML; page in
+  `lib/Provisioning/CalibrationPage.h`): shows the live sensor-side mV and NTU about once a second with a
+  settling / steady / unstable / signal lost note, the stored clear-water value and its last-calibrated date, a
+  **Capture** button that runs the 20 s median capture and reports the saved median or the refusal reason, and a
+  manual field where **blank keeps the stored value**. It polls `GET /cal/status` (fixed key set, no identity,
+  secret, SSID or MAC); `POST /cal/capture` and `POST /cal/set` are the only mutations (a manual save during a
+  running capture answers 409). **Calibrating never restarts the unit and never blocks WiFi/identity setup** —
+  an uncalibrated unit simply reports temperature only.
+- **Restart rule:** the unit restarts about 2 s after WiFi or device identity is
+  **saved in the current portal session**, never merely because the portal is open. Before the 05-01 fix, a BOOT-hold on an installed
+  (provisioned) unit restarted it about 0.5 s after the hotspot opened, with nothing saved, which made
+  recalibrating an installed unit impossible.
+- **Re-entering setup on a working unit** (pond router replaced, secret rotated on the Devices page,
+  recalibration, …): hold the BOOT button (GPIO 0) for 5 seconds. The hotspot reopens for 5 minutes and **stays
+  open while a phone is joined** (`setAPClientCheck`); tap Exit or walk away when done. Sampling and the MQTT
+  buffer keep running the whole time. **Press it after power-on, not during** — held down while powering up,
+  GPIO 0 instead drops the chip into its ROM download mode. A waterproof button wired from GPIO 0 to GND on the
+  enclosure needs no code change.
+- **Web OTA is blocked.** The menu is set explicitly (`wifi`, `param`, `custom`, `info`, `exit`) with no
+  Update, Erase or Restart, and WiFiManager's always-registered `/update`, `/u`, `/erase` and `/restart` URLs
+  are shadowed by handlers registered first that return **404**, because anyone with the shared hotspot
+  password could otherwise flash arbitrary firmware or wipe the unit.
 - **Automatic fallback:** if the saved WiFi is unreachable for 10 straight minutes, the hotspot opens on its
   own for 5 minutes, then closes and goes back to retrying the saved network — repeating for as long as the
   outage lasts, so a unit nobody can reach in person still has a way back online.
@@ -105,7 +127,9 @@ the PlatformIO IDE extension in VS Code.
 - Build the bench instrument (never for a deployed unit): `pio run -e nodemcu-32s-bench`
 - Upload the bench instrument: `pio run -e nodemcu-32s-bench -t upload`
 - Bench serial session (115200), where `cal show`, `cal capture` and `cal set <mV>` are typed:
-  `pio device monitor -e nodemcu-32s-bench`
+  `pio device monitor -e nodemcu-32s-bench`. `cal capture` is the same 20 s median capture the portal runs and
+  prints its result (saved median or refusal reason) when it finishes; the CSV keeps its own 1 s rows meanwhile,
+  as an independent cross-check of the capture median.
 - Host suites (no board needed): `pio test -e native` — this now runs **two** suites, `test_wireformat` and
   `test_turbidity_math`, because `[env:native]`'s `test_filter` lists both by name. A native suite missing
   from that filter is skipped silently, so the run looks green while proving nothing about it.
@@ -151,8 +175,11 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
   true. It reads the sensors on each interval (only after NTP has synced, so every sample has a real
   timestamp).
 - `lib/Provisioning/`: see "Field provisioning" above. Owns the WiFiManager instance, the BOOT-button and
-  WiFi-outage triggers for reopening the setup hotspot, and the `unit` NVS namespace holding `device_id` /
-  `device_secret`.
+  WiFi-outage triggers for reopening the setup hotspot, the `unit` NVS namespace holding `device_id` /
+  `device_secret` / `turb_clear_mv` / `turb_cal_at`, and the calibration capture engine (a non-blocking 1 Hz
+  sampler that runs only while the portal is open or a capture is running; a portal capture is cancelled when
+  the hotspot closes). Sensor access is injected through `Config` callbacks so this library never includes the
+  Sensors library's header.
 - `lib/Sensors/`: `sensors::readAll()` returns a `SensorSample` (temperature °C and turbidity NTU).
   - **Turbidity:** SEN0189-family analog module on **GPIO34** (ADC1), fed through a 10 kΩ / 12 kΩ divider
     because the sensor swings to 4.5 V and the ESP32's ADC tops out near 3.3 V. One read is a burst of
@@ -162,8 +189,11 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     reference is one `uShort` of sensor-side millivolts in NVS, namespace `unit`, key `turb_clear_mv`, owned
     by `lib/Provisioning/` (0 = never calibrated, and the boot log says so once). Calibration is deliberately
     **not** part of `isProvisioned()`: an uncalibrated unit still finishes setup and keeps reporting
-    temperature. Write that key only through `provisioning::storeTurbidityClearWaterMv()`, which refuses an
-    implausible value and logs the reason.
+    temperature. Beside it, `turb_cal_at` (`uInt`) holds the Unix seconds (UTC, from NTP) when the value was
+    stored; **0 = date unknown**, which is what a unit calibrated before Phase 5 or with no NTP sync yet shows.
+    `provisioning::storeTurbidityClearWaterMv()` is the **only writer of both keys**: it refuses an implausible
+    value and logs the reason, writes the value then the stamp, and applies the new reference live (no
+    restart), so no caller can store without applying.
   - **Temperature:** real DS18B20 driver, OneWire bus on GPIO 4. The probe's data line needs a ~4.7kΩ
     pull-up to 3V3 if the module doesn't already have one built in. `sensors::begin()` logs a warning if no
     DS18B20 is found on the bus at boot (check wiring/pull-up if that happens).
