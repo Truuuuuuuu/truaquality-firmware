@@ -1,15 +1,18 @@
 #include "Provisioning.h"
 
+#include "CalibrationPage.h"
 #include "TurbidityCalibration.h"
 #include "TurbidityMath.h"
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <cctype>
 #include <cstring>
 #include <ctime>
+#include <vector>
 
 namespace
 {
@@ -385,6 +388,195 @@ namespace
       }
     }
   }
+
+  // Every /cal response is live state, so none may be cached: a captive browser that served a stale status or
+  // page would show an admin a reading or a "Saved" line that is no longer true.
+  void sendJson(int code, JsonDocument &doc)
+  {
+    String body;
+    serializeJson(doc, body);
+    wm.server->sendHeader("Cache-Control", "no-store");
+    wm.server->send(code, "application/json", body);
+  }
+
+  void handleBlocked()
+  {
+    wm.server->send(404, "text/plain", "not available");
+  }
+
+  void handleCalPage()
+  {
+    wm.server->sendHeader("Cache-Control", "no-store");
+    wm.server->send(200, "text/html; charset=utf-8", provisioning::calpage::CAL_PAGE_HTML);
+  }
+
+  const char *captureStateToken(provisioning::CaptureState state)
+  {
+    switch (state)
+    {
+    case provisioning::CaptureState::Idle:
+      return "idle";
+    case provisioning::CaptureState::Capturing:
+      return "capturing";
+    case provisioning::CaptureState::Accepted:
+      return "accepted";
+    case provisioning::CaptureState::Refused:
+      return "refused";
+    }
+    return "refused";
+  }
+
+  // A fixed key set and nothing else (T-05-21): the hotspot password is shared across every unit, so this
+  // response must never carry the device identity, its secret, the saved SSID or the MAC. Serves cached values
+  // only - the sampler owns the sensor - so polling it costs no burst.
+  void handleCalStatus()
+  {
+    const provisioning::LiveReadout live = provisioning::turbidityLiveReadout();
+    const provisioning::CaptureStatus capture = provisioning::turbidityCaptureStatus();
+    const bool finished = capture.state == provisioning::CaptureState::Accepted ||
+                          capture.state == provisioning::CaptureState::Refused;
+
+    JsonDocument doc;
+    if (isnan(live.sensorMv))
+    {
+      doc["mv"] = nullptr;
+    }
+    else
+    {
+      doc["mv"] = live.sensorMv;
+    }
+    if (isnan(live.ntu))
+    {
+      doc["ntu"] = nullptr;
+    }
+    else
+    {
+      doc["ntu"] = live.ntu;
+    }
+    doc["state"] = live.state;
+    doc["capture"] = captureStateToken(capture.state);
+    doc["samples"] = static_cast<unsigned>(capture.samples);
+    doc["needed"] = static_cast<unsigned>(turbidity::cal::CAPTURE_WINDOW_SAMPLES);
+    if (finished)
+    {
+      doc["medianMv"] = static_cast<unsigned>(capture.medianMv);
+      if (isnan(capture.spreadMv))
+      {
+        doc["spreadMv"] = nullptr;
+      }
+      else
+      {
+        doc["spreadMv"] = capture.spreadMv;
+      }
+    }
+    else
+    {
+      doc["medianMv"] = nullptr;
+      doc["spreadMv"] = nullptr;
+    }
+    if (capture.reason != nullptr)
+    {
+      doc["reason"] = capture.reason;
+    }
+    else
+    {
+      doc["reason"] = nullptr;
+    }
+    doc["storedMv"] = static_cast<unsigned>(provisioning::turbidityClearWaterMv());
+    doc["calibratedAt"] = provisioning::turbidityCalibratedAt();
+    sendJson(200, doc);
+  }
+
+  void handleCalCapture()
+  {
+    JsonDocument doc;
+    if (provisioning::startTurbidityCapture())
+    {
+      doc["capture"] = "capturing";
+      sendJson(202, doc);
+      return;
+    }
+    doc["error"] = "capture already running";
+    sendJson(409, doc);
+  }
+
+  // D-09: a blank field means "keep", never "write 0". Only the "mv" argument is read, its length is capped
+  // before parsing, and the response carries a result token, never the raw input (T-05-19, T-05-20). A typed
+  // value still goes through the single door, which re-checks the plausible window and stamps the date.
+  void handleCalSet()
+  {
+    JsonDocument doc;
+    const String arg = wm.server->hasArg("mv") ? wm.server->arg("mv") : String();
+    if (arg.length() > 16)
+    {
+      Serial.println("[provisioning] manual calibration not_a_number");
+      doc["result"] = "not_a_number";
+      sendJson(400, doc);
+      return;
+    }
+
+    const turbidity::cal::ManualResult parsed = turbidity::cal::parseManualMv(arg.c_str());
+    switch (parsed.kind)
+    {
+    case turbidity::cal::ManualKind::Keep:
+      Serial.println("[provisioning] manual calibration keep");
+      doc["result"] = "keep";
+      sendJson(200, doc);
+      return;
+    case turbidity::cal::ManualKind::NotANumber:
+    case turbidity::cal::ManualKind::Implausible:
+      Serial.printf("[provisioning] manual calibration %s\n", turbidity::cal::manualKindToken(parsed.kind));
+      doc["result"] = turbidity::cal::manualKindToken(parsed.kind);
+      sendJson(400, doc);
+      return;
+    case turbidity::cal::ManualKind::Set:
+      break;
+    }
+
+    // A running capture would overwrite this value with its own median 20 s later, and the admin would see two
+    // different "Saved" lines for one session - so a manual save waits for the capture to finish.
+    if (provisioning::turbidityCaptureStatus().state == provisioning::CaptureState::Capturing)
+    {
+      Serial.println("[provisioning] manual calibration busy");
+      doc["result"] = "busy";
+      sendJson(409, doc);
+      return;
+    }
+    if (!provisioning::storeTurbidityClearWaterMv(parsed.mv))
+    {
+      Serial.println("[provisioning] manual calibration nvs");
+      doc["result"] = "nvs";
+      sendJson(500, doc);
+      return;
+    }
+    Serial.println("[provisioning] manual calibration set");
+    doc["result"] = "set";
+    doc["storedMv"] = static_cast<unsigned>(provisioning::turbidityClearWaterMv());
+    doc["calibratedAt"] = provisioning::turbidityCalibratedAt();
+    sendJson(200, doc);
+  }
+
+  // Runs on every portal start, because WiFiManager rebuilds its web server each time. It is called before
+  // WiFiManager adds its own routes, and the server matches the first registered handler, so the routes added
+  // here win over WiFiManager's for the same URI.
+  void registerCalibrationRoutes()
+  {
+    // WiFiManager registers web OTA (/update, and /u as its upload target), /erase and /restart whether or not
+    // they are in the menu. Anyone holding the shared hotspot password could otherwise flash arbitrary firmware
+    // or wipe the unit's WiFi (T-05-16, T-05-17). /u is answered by a handler with no upload function, so an
+    // uploaded image is discarded rather than written.
+    wm.server->on("/update", HTTP_ANY, handleBlocked);
+    wm.server->on("/u", HTTP_ANY, handleBlocked);
+    wm.server->on("/erase", HTTP_ANY, handleBlocked);
+    wm.server->on("/restart", HTTP_ANY, handleBlocked);
+
+    // Changes are POST-only so a captive browser's prefetch or a followed link can never start a capture or
+    // store a value (T-05-18).
+    wm.server->on("/cal", HTTP_GET, handleCalPage);
+    wm.server->on("/cal/status", HTTP_GET, handleCalStatus);
+    wm.server->on("/cal/capture", HTTP_POST, handleCalCapture);
+    wm.server->on("/cal/set", HTTP_POST, handleCalSet);
+  }
 }
 
 namespace provisioning
@@ -431,7 +623,15 @@ namespace provisioning
     // because only WiFiManager's own handlers count as "accessed". With this it stays open while any station is
     // joined to the hotspot - trust is the same as the Setup page: whoever holds SETUP_AP_PASSWORD.
     wm.setAPClientCheck(true);
-    wm.setParamsPage(true);
+    // An explicit menu instead of the params-page shortcut, which calls setMenu itself and would drop the
+    // "custom" Calibrate button. Listing "param" still keeps the Setup page separate from the WiFi page. There
+    // is deliberately no "update", "erase" or "restart": update is web OTA, and all three are also blocked at
+    // the route level in registerCalibrationRoutes(). Calibrating never sets savedThisSession, so it never
+    // restarts the unit (CAL-07).
+    std::vector<const char *> menu = {"wifi", "param", "custom", "info", "exit"};
+    wm.setMenu(menu);
+    wm.setCustomMenuHTML(provisioning::calpage::CAL_MENU_HTML);
+    wm.setWebServerCallback(registerCalibrationRoutes);
     setupPortalParams();
 
     if (!isProvisioned())
