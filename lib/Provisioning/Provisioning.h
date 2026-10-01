@@ -61,6 +61,46 @@ namespace provisioning
   // value could not be written to NVS.
   bool storeTurbidityClearWaterMv(uint16_t clearWaterMv);
 
+  // A clear-water capture (D-01): 20 samples, one burst per second, starting at the request, judged by
+  // turbidity::cal::evaluateCapture and stored through storeTurbidityClearWaterMv only when accepted. It is
+  // asynchronous: startTurbidityCapture() returns at once and the caller polls turbidityCaptureStatus(), because
+  // a 20 s blocking wait would stall WiFiManager, the MQTT keepalive and PUBACK handling. Driven by loop(), which
+  // must keep being called. Never restarts the unit - a calibration is not a WiFi/identity save.
+  enum class CaptureState : uint8_t
+  {
+    Idle,
+    Capturing,
+    Accepted,
+    Refused,
+  };
+
+  struct CaptureStatus
+  {
+    CaptureState state;
+    uint8_t samples;   // samples collected so far, 0..20
+    uint16_t medianMv; // set once the capture has finished (0 when the outcome carries none)
+    float spreadMv;    // set once the capture has finished; NAN when the signal was lost
+    // nullptr unless Refused; then one of "signal_lost" | "unstable" | "implausible" (the capture rule refused
+    // it), "nvs" (accepted but the write failed) or "cancelled" (the setup hotspot closed mid-capture).
+    const char *reason;
+  };
+
+  // Starts a capture. Returns false, changing nothing, if one is already running (one capture in flight).
+  bool startTurbidityCapture();
+  CaptureStatus turbidityCaptureStatus();
+
+  struct LiveReadout
+  {
+    float sensorMv; // last sampled sensor-side mV, NAN before the first sample or with no signal
+    float ntu;      // NTU of that same burst, NAN when uncalibrated or no signal
+    const char *state; // turbidity::cal::liveStateToken: "settling" | "steady" | "unstable" | "signal_lost"
+  };
+
+  // The latest cached sample and the live stability state over the last 20 samples. Never takes a burst
+  // itself, so polling it at any rate costs nothing; the sampler runs only while the setup hotspot is open or a
+  // capture is running.
+  LiveReadout turbidityLiveReadout();
+
   // Call on every loop(): drives the captive portal while it's open, watches for a held BOOT button or a long
   // WiFi outage to reopen it, and restarts the unit only after WiFi or device identity was saved in the current
   // portal session - so BOOT-hold on an installed unit keeps the hotspot open for recalibration.

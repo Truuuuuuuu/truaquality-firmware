@@ -62,6 +62,29 @@ namespace
   unsigned long lastBlinkMs = 0;
   bool ledState = false;
 
+  // D-03's 150 mV spread limit was derived from bench rows logged at 1 Hz, so the window it judges has to be
+  // sampled at 1 Hz too - a faster or slower cadence would change what "steady over 20 samples" means.
+  constexpr unsigned long SAMPLER_INTERVAL_MS = 1000;
+
+  // Live window: the last 20 samples as a ring, feeding the on-screen stability indicator. Order inside the
+  // ring does not matter because the rule is max minus min.
+  float liveWindow[turbidity::cal::CAPTURE_WINDOW_SAMPLES] = {0};
+  size_t liveFilled = 0;
+  size_t liveNext = 0;
+  float latestMv = NAN;
+  float latestNtu = NAN;
+  unsigned long lastSampleMs = 0;
+  bool samplerPrimed = false;
+
+  // Capture window: separate from the live ring so a capture only ever holds samples taken after the request.
+  float captureWindow[turbidity::cal::CAPTURE_WINDOW_SAMPLES] = {0};
+  size_t captureCount = 0;
+  provisioning::CaptureState captureState = provisioning::CaptureState::Idle;
+  bool captureStartedInPortal = false;
+  uint16_t captureMedianMv = 0;
+  float captureSpreadMv = NAN;
+  const char *captureReason = nullptr;
+
   bool isValidDeviceId(const char *value)
   {
     if (strlen(value) != DEVICE_ID_LEN)
@@ -276,6 +299,92 @@ namespace
       digitalWrite(LED_PIN, ledState ? HIGH : LOW);
     }
   }
+
+  void finishCapture()
+  {
+    const turbidity::cal::CaptureResult result = turbidity::cal::evaluateCapture(captureWindow, captureCount);
+    captureMedianMv = result.medianMv;
+    captureSpreadMv = result.spreadMv;
+    if (result.outcome == turbidity::cal::CaptureOutcome::Accepted)
+    {
+      if (provisioning::storeTurbidityClearWaterMv(result.medianMv))
+      {
+        captureState = provisioning::CaptureState::Accepted;
+        captureReason = nullptr;
+        Serial.printf("[provisioning] calibration capture accepted: median %u mV, spread %.1f mV\n",
+                      static_cast<unsigned>(captureMedianMv), captureSpreadMv);
+        return;
+      }
+      captureReason = "nvs";
+    }
+    else
+    {
+      captureReason = turbidity::cal::captureOutcomeToken(result.outcome);
+    }
+    captureState = provisioning::CaptureState::Refused;
+    Serial.printf("[provisioning] calibration capture refused (%s): median %u mV, spread %.1f mV\n", captureReason,
+                  static_cast<unsigned>(captureMedianMv), captureSpreadMv);
+  }
+
+  // One burst per second while the setup hotspot is open or a capture is running, and nothing otherwise: a
+  // unit in normal field operation takes its readings only on the reporting schedule. Tick-driven, never a
+  // wait, so the portal, MQTT keepalive and PUBACKs keep running through a 20 s capture.
+  void tickSampler()
+  {
+    const bool portalOpen = wm.getConfigPortalActive();
+    bool capturing = captureState == provisioning::CaptureState::Capturing;
+
+    // Nobody can see the result of a portal capture once the hotspot is gone, and a calibration change nobody
+    // saw is exactly the confidently-wrong risk this phase exists to prevent - so it is cancelled, not stored.
+    if (capturing && captureStartedInPortal && !portalOpen)
+    {
+      captureState = provisioning::CaptureState::Refused;
+      captureReason = "cancelled";
+      capturing = false;
+      Serial.println("[provisioning] calibration capture cancelled: setup hotspot closed");
+    }
+
+    if (!portalOpen && !capturing)
+    {
+      liveFilled = 0;
+      liveNext = 0;
+      latestMv = NAN;
+      latestNtu = NAN;
+      samplerPrimed = false;
+      return;
+    }
+
+    if (samplerPrimed && millis() - lastSampleMs < SAMPLER_INTERVAL_MS)
+    {
+      return;
+    }
+    if (config.readTurbiditySensorMv == nullptr)
+    {
+      return;
+    }
+    samplerPrimed = true;
+    lastSampleMs = millis();
+
+    const float mv = config.readTurbiditySensorMv();
+    latestMv = mv;
+    latestNtu = config.readTurbidityNtu != nullptr ? config.readTurbidityNtu() : NAN;
+
+    liveWindow[liveNext] = mv;
+    liveNext = (liveNext + 1) % turbidity::cal::CAPTURE_WINDOW_SAMPLES;
+    if (liveFilled < turbidity::cal::CAPTURE_WINDOW_SAMPLES)
+    {
+      liveFilled++;
+    }
+
+    if (capturing)
+    {
+      captureWindow[captureCount++] = mv;
+      if (captureCount >= turbidity::cal::CAPTURE_WINDOW_SAMPLES)
+      {
+        finishCapture();
+      }
+    }
+  }
 }
 
 namespace provisioning
@@ -417,6 +526,41 @@ namespace provisioning
     return true;
   }
 
+  bool startTurbidityCapture()
+  {
+    if (captureState == CaptureState::Capturing)
+    {
+      return false;
+    }
+    captureCount = 0;
+    for (size_t i = 0; i < turbidity::cal::CAPTURE_WINDOW_SAMPLES; i++)
+    {
+      captureWindow[i] = NAN;
+    }
+    captureMedianMv = 0;
+    captureSpreadMv = NAN;
+    captureReason = nullptr;
+    captureStartedInPortal = wm.getConfigPortalActive();
+    captureState = CaptureState::Capturing;
+    // D-01: the window starts at the request. Un-priming makes the next tick take the first sample at once
+    // and restarts the 1 s cadence from there, so no reading from before the click is ever reused.
+    samplerPrimed = false;
+    Serial.println("[provisioning] calibration capture started (20 s)");
+    return true;
+  }
+
+  CaptureStatus turbidityCaptureStatus()
+  {
+    return CaptureStatus{captureState, static_cast<uint8_t>(captureCount), captureMedianMv, captureSpreadMv,
+                         captureReason};
+  }
+
+  LiveReadout turbidityLiveReadout()
+  {
+    return LiveReadout{latestMv, latestNtu,
+                       turbidity::cal::liveStateToken(turbidity::cal::liveState(liveWindow, liveFilled))};
+  }
+
   bool portalActive()
   {
     return wm.getConfigPortalActive();
@@ -429,6 +573,7 @@ namespace provisioning
     handleButton();
     handleOutage(wifiConnected);
     handleLed();
+    tickSampler();
 
     // Invariant: an unprovisioned unit always has its setup hotspot open. WiFiManager can close the portal on
     // its own (its timeout, or breakAfterConfig after either page is saved) without both pieces being present
