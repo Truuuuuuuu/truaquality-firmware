@@ -132,21 +132,20 @@ static void benchShowCalibration()
       diagnostics.ntu);
 }
 
+// Set while a `cal capture` from this console is running, so benchPump() prints its outcome exactly once.
+static bool benchCaptureWatching = false;
+
+// D-02: the same 20-sample capture the portal's Calibrate screen runs, not a single burst of its own - the bench
+// and the portal must never disagree about what a capture is. Asynchronous: benchPump() reports the result.
 static void benchCaptureCalibration()
 {
-  float sensorMv = sensors::readTurbidityMillivolts();
-  if (isnan(sensorMv))
+  if (!provisioning::startTurbidityCapture())
   {
-    Serial.println("[bench] cal capture refused: no turbidity reading (pin under the fault floor - check the 5 V supply and the divider)");
+    Serial.println("[bench] cal capture refused: a capture is already running");
     return;
   }
-  long rounded = lroundf(sensorMv);
-  if (rounded < 0 || rounded > 65535)
-  {
-    Serial.printf("[bench] cal capture refused: %.1f mV does not fit the stored 16-bit value\n", sensorMv);
-    return;
-  }
-  benchStoreCalibration(static_cast<uint16_t>(rounded), "cal capture");
+  Serial.println("[bench] cal capture started: hold the probe still in clean water, 20 samples over about 20 s");
+  benchCaptureWatching = true;
 }
 
 static void benchSetCalibration(const char *argument)
@@ -230,6 +229,12 @@ static void benchPollSerial()
   }
 }
 
+// The CSV keeps its own burst per row, even while a capture is running. It is the Phase 3 measurement
+// instrument, and its rows must mean the same thing whether or not a capture is in flight; the capture
+// sampler's bursts are separate and cached inside Provisioning. During a capture that is two ~64 ms bursts per
+// second, well under the 1 s budget, and the ~20 CSV rows logged meanwhile give an independent cross-check of
+// the capture's median (05-06).
+//
 // One line per burst, columns exactly as the header printed in setup(). %.1f everywhere so a missing value
 // prints as `nan` and the fit script can tell it apart from a real 0. This is the one place the "one concise
 // line per reading" rule is deliberately broken, and it exists only in this environment.
@@ -258,6 +263,26 @@ static void benchPump()
     benchSampledOnce = true;
     lastBenchSampleMs = millis();
     benchLogSample();
+  }
+
+  if (benchCaptureWatching)
+  {
+    const provisioning::CaptureStatus status = provisioning::turbidityCaptureStatus();
+    if (status.state != provisioning::CaptureState::Capturing)
+    {
+      benchCaptureWatching = false;
+      if (status.state == provisioning::CaptureState::Accepted)
+      {
+        Serial.printf("[bench] cal capture accepted: stored median %u mV (spread %.1f mV over 20 samples)\n",
+                      static_cast<unsigned>(status.medianMv), status.spreadMv);
+      }
+      else
+      {
+        Serial.printf("[bench] cal capture refused (%s): median %u mV, spread %.1f mV, nothing stored\n",
+                      status.reason != nullptr ? status.reason : "unknown", static_cast<unsigned>(status.medianMv),
+                      status.spreadMv);
+      }
+    }
   }
 }
 #endif
@@ -289,7 +314,7 @@ void setup()
   sensors::setTurbidityCalibration(provisioning::turbidityClearWaterMv());
 
 #if TURBIDITY_BENCH
-  Serial.printf("[bench] %s build, commands: cal show | cal capture | cal set <mV>\n", BENCH_MARKER);
+  Serial.printf("[bench] %s build, commands: cal show | cal capture (20 s median) | cal set <mV>\n", BENCH_MARKER);
   Serial.println("[bench] csv,millis,raw_mean_mv,filtered_pin_mv,spread_mv,sensor_mv,ntu,clear_mv");
 #endif
 }
