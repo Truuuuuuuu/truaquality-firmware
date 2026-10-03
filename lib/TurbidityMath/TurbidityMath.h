@@ -10,7 +10,8 @@
 // of pin constants and of the calibrated millivolt ADC call, so [env:native] compiles it and
 // test_turbidity_math can pin the fault floor and both clamps in about a second without a board, a 5 V
 // supply or a mud sample on the desk. The hardware-touching part — attenuation, the 64-read burst, the 1 ms
-// spacing — stays in Sensors.cpp, which is never compiled natively and is free to depend on Arduino.
+// spacing, and the scheduling of the report window's bursts — stays in Sensors.cpp, which is never compiled
+// natively and is free to depend on Arduino; only the window's bookkeeping and median selection live here.
 //
 // Symptom, if the rule is broken here: `pio test -e native` failing with a missing-Arduino-core-header
 // error that names *this* file. The same error naming Sensors.cpp instead means something broke the
@@ -148,6 +149,140 @@ namespace turbidity
     return out;
   }
 
+  // Step 1 of classify(), on its own so the burst window below and classify() apply the same fault floor and
+  // cannot drift apart: a burst the window counts as "valid" is exactly a burst classify() would not call
+  // NoSignal for the signal reason.
+  inline bool hasSignal(float pinMv)
+  {
+    return !std::isnan(pinMv) && pinMv >= FAULT_FLOOR_PIN_MV;
+  }
+
+  // The REPORTED reading (firmware 0.6.1) is the median of the last REPORT_BURSTS bursts, which Sensors.cpp
+  // spreads evenly across the report interval (one every REPORT_INTERVAL_MS / REPORT_BURSTS, ~6 s at 30 s).
+  // Why: on 2026-10-03 a unit in clean water reported 6 of 8 readings at 0.0 NTU and two isolated spikes of
+  // 260.1 and 408.1 NTU, each opening a backend WARNING, because one reading was one ~64 ms burst and it could
+  // land on the low level of the two-level clear-water signal (~110-120 mV below). The bench saw the two
+  // levels flip every 1-17 s, irregularly, so a window of a few seconds would still sit inside one dwell;
+  // spread across the interval, a low dwell has to cover 3 of the 5 bursts — last longer than about 12 s — to
+  // reach the wire. Dwells up to 17 s were seen, so this REDUCES spikes, it does not eliminate them.
+  // PROVISIONAL: re-judged by the pending on-device check (TURBIDITY_TEST_RESULTS.md section 5e). Only the
+  // window bookkeeping and the selection live here; the scheduling and delay() stay in Sensors.cpp.
+  constexpr size_t REPORT_BURSTS = 5;
+  static_assert(REPORT_BURSTS % 2 == 1, "REPORT_BURSTS must be odd so the median is one real burst");
+
+  // The fewest bursts a report may be taken from. Odd for the same reason; 3 is the smallest count where a
+  // single bad burst is outvoted.
+  constexpr size_t MIN_REPORT_BURSTS = 3;
+  static_assert(MIN_REPORT_BURSTS % 2 == 1, "MIN_REPORT_BURSTS must be odd");
+  static_assert(MIN_REPORT_BURSTS <= REPORT_BURSTS, "MIN_REPORT_BURSTS cannot exceed the window size");
+
+  // The window counts a burst as signal by the same test classify() uses for step 1.
+  inline bool isSignalBurst(const Burst &b)
+  {
+    return hasSignal(b.filteredMv);
+  }
+
+  // A ring of the most recent bursts. A value-initialized BurstWindow{} is empty.
+  struct BurstWindow
+  {
+    Burst bursts[REPORT_BURSTS];
+    size_t count; // entries held, capped at REPORT_BURSTS
+    size_t next;  // slot the next push writes, i.e. the oldest entry once the ring is full
+  };
+
+  // Appends a burst, overwriting the oldest once the ring is full.
+  inline void pushBurst(BurstWindow &w, const Burst &b)
+  {
+    w.bursts[w.next] = b;
+    w.next = (w.next + 1) % REPORT_BURSTS;
+    if (w.count < REPORT_BURSTS)
+    {
+      w.count++;
+    }
+  }
+
+  // How many immediate bursts a report must take first so the median comes from at least MIN_REPORT_BURSTS.
+  // Counted on entries, not on VALID entries, on purpose: on a dead pin a valid count would never be reached
+  // and the top-up would loop forever; counting entries bounds warm-up to at most MIN_REPORT_BURSTS bursts.
+  inline size_t topUpNeeded(const BurstWindow &w)
+  {
+    return w.count < MIN_REPORT_BURSTS ? MIN_REPORT_BURSTS - w.count : 0;
+  }
+
+  // The burst a report is taken from. Returned whole, by value, so the NTU, the classify() input and the
+  // diagnostics all describe one real acquisition rather than a blend of several.
+  inline Burst reportBurst(const BurstWindow &w)
+  {
+    // 1. Nothing sampled yet: all-NAN, which classify() reports as NoSignal rather than inventing a value.
+    if (w.count == 0)
+    {
+      return Burst{NAN, NAN, NAN};
+    }
+
+    // Valid entries, oldest to newest.
+    const size_t oldest = (w.next + REPORT_BURSTS - w.count) % REPORT_BURSTS;
+    size_t validIdx[REPORT_BURSTS];
+    size_t valid = 0;
+    for (size_t k = 0; k < w.count; k++)
+    {
+      const size_t idx = (oldest + k) % REPORT_BURSTS;
+      if (isSignalBurst(w.bursts[idx]))
+      {
+        validIdx[valid++] = idx;
+      }
+    }
+
+    // 2. A strict majority of the window has signal: one transient failed burst (a NaN, or a dip under the
+    //    floor) must not blank a reading the rest of the window supports. An even number of valid bursts
+    //    drops the OLDEST one, so the median is a single real burst from the freshest odd subset rather than
+    //    an average of two that may sit on different levels. The median is picked by rank count (no sort, no
+    //    reordering of the caller's window, nothing newer than C++11): candidate i is the median when fewer
+    //    than half the subset is below it and more than half is at or below it.
+    if (2 * valid > w.count)
+    {
+      const size_t start = (valid % 2 == 0) ? 1 : 0;
+      const size_t n = valid - start;
+      for (size_t i = start; i < valid; i++)
+      {
+        const float fi = w.bursts[validIdx[i]].filteredMv;
+        size_t below = 0;
+        size_t atOrBelow = 0;
+        for (size_t j = start; j < valid; j++)
+        {
+          const float fj = w.bursts[validIdx[j]].filteredMv;
+          if (fj < fi)
+          {
+            below++;
+          }
+          if (fj <= fi)
+          {
+            atOrBelow++;
+          }
+        }
+        if (below <= n / 2 && n / 2 < atOrBelow)
+        {
+          return w.bursts[validIdx[i]];
+        }
+      }
+    }
+
+    // 3. Failed majority, or a tie: return the NEWEST failed burst as-is, so classify() reports NoSignal and
+    //    the diagnostics show the real dead-pin millivolts (e.g. 142). A dead pin must still say no_signal,
+    //    and a tie goes toward the fault because a confident value from half a window is worse than none.
+    //    The cost: after a replug the unit needs up to 3 new bursts (~18 s at 6 s spacing) to report again.
+    for (size_t k = w.count; k > 0; k--)
+    {
+      const size_t idx = (oldest + k - 1) % REPORT_BURSTS;
+      if (!isSignalBurst(w.bursts[idx]))
+      {
+        return w.bursts[idx];
+      }
+    }
+    // Unreachable for a consistent window (a non-empty window with no strict valid majority holds at least
+    // one failed burst); refuse rather than report.
+    return Burst{NAN, NAN, NAN};
+  }
+
   // Undoes the divider: what the sensor put out, given what the pin saw. Only diagnostics and the fault
   // floor need it — the ratio normalization below cancels the divider out of the NTU result.
   inline float sensorMvFromPinMv(float pinMv)
@@ -201,7 +336,8 @@ namespace turbidity
   {
     // 1. Dead signal or dead 5 V supply (D-01). R2 pulls an unplugged pin toward GND, which the curve would
     //    happily read as maximum turbidity; NAN is the only honest answer and the upload omits it.
-    if (std::isnan(pinMv) || pinMv < FAULT_FLOOR_PIN_MV)
+    //    The test itself is hasSignal(), shared with the burst window's isSignalBurst().
+    if (!hasSignal(pinMv))
     {
       return Status::NoSignal;
     }

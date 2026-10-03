@@ -646,6 +646,194 @@ void test_cal_tokens_cover_every_enumerator(void)
   TEST_ASSERT_EQUAL_STRING("not_a_number", turbidity::cal::manualKindToken(static_cast<ManualKind>(99)));
 }
 
+// ---- Report window: median of spaced bursts (quick 261003-lpf, firmware 0.6.1) ----
+namespace
+{
+  // A burst whose filtered (pin-side) value is `pinMv`. rawMeanMv and spreadMv are passed separately so a
+  // case can tell which whole burst came back, not just which filtered value.
+  turbidity::Burst burstAt(float pinMv, float rawMeanMv = 0.0f, float spreadMv = 10.0f)
+  {
+    return turbidity::Burst{rawMeanMv, pinMv, spreadMv};
+  }
+
+  // The two clear-water levels of the 2026-10-03 incident, pin-side: the calibrated level and one ~120 mV
+  // (sensor-side) below it, which is what produced the 260.1 / 408.1 NTU spikes.
+  constexpr uint16_t INCIDENT_CLEAR_MV = 3252;
+  const float HIGH_PIN_MV = 3252.0f * turbidity::DIVIDER_RATIO;
+  const float LOW_PIN_MV = (3252.0f - 120.0f) * turbidity::DIVIDER_RATIO;
+
+  // The pin reading of an unplugged signal wire on the bench (03-06 runs 02 and 03), under the fault floor.
+  constexpr float DEAD_PIN_MV = 142.0f;
+}
+
+void test_window_majority_returns_a_whole_high_burst(void)
+{
+  // W-01: low bursts first and last, three high ones between. The highs differ by a few mV so the median
+  // is one identifiable burst, and every burst carries its own rawMean/spread so the case proves the
+  // window returns that burst whole (diagnostics stay coherent), not a filtered value with stale extras.
+  turbidity::BurstWindow w{};
+  turbidity::pushBurst(w, burstAt(LOW_PIN_MV, 1.0f, 11.0f));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV - 2.0f, 2.0f, 12.0f));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV + 2.0f, 3.0f, 13.0f));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV, 4.0f, 14.0f));
+  turbidity::pushBurst(w, burstAt(LOW_PIN_MV, 5.0f, 15.0f));
+  // Sorted: L, L, H-2, H, H+2 -> the third value, H-2, is the median: the lowest of the high bursts.
+  const turbidity::Burst out = turbidity::reportBurst(w);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, HIGH_PIN_MV - 2.0f, out.filteredMv);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2.0f, out.rawMeanMv);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 12.0f, out.spreadMv);
+}
+
+void test_window_incident_levels_report_zero_not_a_spike(void)
+{
+  // W-02: end to end with the incident's numbers. One low burst on its own converts to well over the 25 NTU
+  // WARNING line (that is the bug); the window's median of 3 high + 2 low converts to clear water.
+  TEST_ASSERT_TRUE(turbidity::ntuFromPinMv(LOW_PIN_MV, INCIDENT_CLEAR_MV) > 25.0f);
+  turbidity::BurstWindow w{};
+  turbidity::pushBurst(w, burstAt(LOW_PIN_MV));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(w, burstAt(LOW_PIN_MV));
+  const turbidity::Burst out = turbidity::reportBurst(w);
+  TEST_ASSERT_FLOAT_WITHIN(NTU_TOLERANCE, 0.0f, turbidity::ntuFromPinMv(out.filteredMv, INCIDENT_CLEAR_MV));
+}
+
+void test_window_ring_keeps_only_the_newest_five(void)
+{
+  // W-03: seven pushes into a five-slot ring drop 1001 and 1002; the median of 1003..1007 is 1005.
+  turbidity::BurstWindow w{};
+  for (int i = 1; i <= 7; i++)
+  {
+    turbidity::pushBurst(w, burstAt(1000.0f + static_cast<float>(i)));
+  }
+  TEST_ASSERT_EQUAL_UINT32(turbidity::REPORT_BURSTS, w.count);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1005.0f, turbidity::reportBurst(w).filteredMv);
+}
+
+void test_window_equal_bursts_report_that_value(void)
+{
+  // W-04: every candidate ties; the rank rule must still pick one rather than none.
+  turbidity::BurstWindow w{};
+  for (size_t i = 0; i < turbidity::REPORT_BURSTS; i++)
+  {
+    turbidity::pushBurst(w, burstAt(1500.0f));
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1500.0f, turbidity::reportBurst(w).filteredMv);
+}
+
+void test_window_low_dwell_over_three_bursts_still_reaches_the_wire(void)
+{
+  // W-05, the honest limit: a low dwell covering 3 of the 5 bursts (longer than about 12 s at 6 s spacing)
+  // is the majority, so the window reports the LOW level. The bench saw dwells up to 17 s.
+  turbidity::BurstWindow w{};
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(w, burstAt(LOW_PIN_MV));
+  turbidity::pushBurst(w, burstAt(LOW_PIN_MV));
+  turbidity::pushBurst(w, burstAt(LOW_PIN_MV));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, LOW_PIN_MV, turbidity::reportBurst(w).filteredMv);
+}
+
+void test_window_warm_up_top_up_and_even_count(void)
+{
+  // W-06: the top-up count, and an even valid count drops the OLDEST valid burst.
+  turbidity::BurstWindow w{};
+  TEST_ASSERT_EQUAL_UINT32(3, turbidity::topUpNeeded(w));
+  const turbidity::Burst empty = turbidity::reportBurst(w);
+  TEST_ASSERT_TRUE(std::isnan(empty.rawMeanMv));
+  TEST_ASSERT_TRUE(std::isnan(empty.filteredMv));
+  TEST_ASSERT_TRUE(std::isnan(empty.spreadMv));
+
+  turbidity::pushBurst(w, burstAt(1000.0f));
+  TEST_ASSERT_EQUAL_UINT32(2, turbidity::topUpNeeded(w));
+  turbidity::pushBurst(w, burstAt(1100.0f));
+  turbidity::pushBurst(w, burstAt(1200.0f));
+  TEST_ASSERT_EQUAL_UINT32(0, turbidity::topUpNeeded(w));
+  turbidity::pushBurst(w, burstAt(1300.0f));
+  TEST_ASSERT_EQUAL_UINT32(0, turbidity::topUpNeeded(w));
+  // Four valid: the newest three are 1100/1200/1300 -> 1200. Keeping the oldest three instead would give
+  // 1100, and averaging the middle pair would give 1150, so only the specified rule passes.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1200.0f, turbidity::reportBurst(w).filteredMv);
+  turbidity::pushBurst(w, burstAt(1400.0f));
+  TEST_ASSERT_EQUAL_UINT32(0, turbidity::topUpNeeded(w));
+}
+
+void test_window_one_transient_failure_does_not_blank_the_reading(void)
+{
+  // W-07: one NaN burst, or one burst under the fault floor, among four good ones is outvoted.
+  turbidity::BurstWindow w{};
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV + 1.0f));
+  turbidity::pushBurst(w, burstAt(NAN));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV + 2.0f));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV + 3.0f));
+  turbidity::Burst out = turbidity::reportBurst(w);
+  TEST_ASSERT_TRUE(out.filteredMv >= HIGH_PIN_MV);
+  TEST_ASSERT_TRUE(turbidity::classify(out.filteredMv, INCIDENT_CLEAR_MV) == turbidity::Status::Ok);
+
+  turbidity::BurstWindow d{};
+  turbidity::pushBurst(d, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(d, burstAt(HIGH_PIN_MV + 1.0f));
+  turbidity::pushBurst(d, burstAt(DEAD_PIN_MV));
+  turbidity::pushBurst(d, burstAt(HIGH_PIN_MV + 2.0f));
+  turbidity::pushBurst(d, burstAt(HIGH_PIN_MV + 3.0f));
+  out = turbidity::reportBurst(d);
+  TEST_ASSERT_TRUE(out.filteredMv >= HIGH_PIN_MV);
+  TEST_ASSERT_TRUE(turbidity::classify(out.filteredMv, INCIDENT_CLEAR_MV) == turbidity::Status::Ok);
+}
+
+void test_window_dead_pin_or_tie_reports_no_signal(void)
+{
+  // W-08: an unplugged wire must still say no_signal, with its real millivolts in the diagnostics.
+  turbidity::BurstWindow all{};
+  for (size_t i = 0; i < turbidity::REPORT_BURSTS; i++)
+  {
+    turbidity::pushBurst(all, burstAt(DEAD_PIN_MV));
+  }
+  turbidity::Burst out = turbidity::reportBurst(all);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, DEAD_PIN_MV, out.filteredMv);
+  TEST_ASSERT_TRUE(turbidity::classify(out.filteredMv, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
+
+  // Three dead of five: failed majority.
+  turbidity::BurstWindow most{};
+  turbidity::pushBurst(most, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(most, burstAt(DEAD_PIN_MV));
+  turbidity::pushBurst(most, burstAt(DEAD_PIN_MV));
+  turbidity::pushBurst(most, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(most, burstAt(DEAD_PIN_MV));
+  out = turbidity::reportBurst(most);
+  TEST_ASSERT_TRUE(turbidity::classify(out.filteredMv, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
+
+  // Two of four: no strict majority, so the tie goes toward the fault; the newest failed burst comes back.
+  turbidity::BurstWindow tie{};
+  turbidity::pushBurst(tie, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(tie, burstAt(DEAD_PIN_MV - 2.0f));
+  turbidity::pushBurst(tie, burstAt(HIGH_PIN_MV));
+  turbidity::pushBurst(tie, burstAt(DEAD_PIN_MV));
+  out = turbidity::reportBurst(tie);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, DEAD_PIN_MV, out.filteredMv);
+  TEST_ASSERT_TRUE(turbidity::classify(out.filteredMv, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
+
+  // Every burst refused (NaN): still NoSignal, never a value.
+  turbidity::BurstWindow nans{};
+  for (size_t i = 0; i < turbidity::REPORT_BURSTS; i++)
+  {
+    turbidity::pushBurst(nans, burstAt(NAN, NAN, NAN));
+  }
+  out = turbidity::reportBurst(nans);
+  TEST_ASSERT_TRUE(turbidity::classify(out.filteredMv, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
+}
+
+void test_window_signal_test_matches_classify_floor(void)
+{
+  // W-09: the window's notion of a usable burst is classify()'s fault floor, boundary included.
+  TEST_ASSERT_FALSE(turbidity::isSignalBurst(burstAt(NAN)));
+  TEST_ASSERT_FALSE(turbidity::isSignalBurst(burstAt(249.9f)));
+  TEST_ASSERT_TRUE(turbidity::isSignalBurst(burstAt(250.0f)));
+  TEST_ASSERT_TRUE(turbidity::classify(249.9f, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -689,5 +877,14 @@ int main(int argc, char **argv)
   RUN_TEST(test_cal_manual_out_of_window_is_implausible);
   RUN_TEST(test_cal_stamp_unsynced_clock_is_date_unknown);
   RUN_TEST(test_cal_tokens_cover_every_enumerator);
+  RUN_TEST(test_window_majority_returns_a_whole_high_burst);
+  RUN_TEST(test_window_incident_levels_report_zero_not_a_spike);
+  RUN_TEST(test_window_ring_keeps_only_the_newest_five);
+  RUN_TEST(test_window_equal_bursts_report_that_value);
+  RUN_TEST(test_window_low_dwell_over_three_bursts_still_reaches_the_wire);
+  RUN_TEST(test_window_warm_up_top_up_and_even_count);
+  RUN_TEST(test_window_one_transient_failure_does_not_blank_the_reading);
+  RUN_TEST(test_window_dead_pin_or_tie_reports_no_signal);
+  RUN_TEST(test_window_signal_test_matches_classify_floor);
   return UNITY_END();
 }
