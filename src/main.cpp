@@ -18,9 +18,14 @@
 // the backend which units can.
 static const char *FIRMWARE_VERSION = "0.6.0";
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
+static const unsigned long NTP_RETRY_INTERVAL_MS = 1000;
+static const unsigned long NTP_WAIT_LOG_INTERVAL_MS = 10000;
 
 static unsigned long lastReadingMs = 0;
 static bool readOnce = false;
+static bool samplePending = false;
+static unsigned long lastNtpCheckMs = 0;
+static unsigned long lastNtpLogMs = 0;
 static bool uplinkStarted = false;
 
 #if TURBIDITY_BENCH
@@ -352,20 +357,38 @@ void loop()
     });
   }
 
+  bool checkNow = false;
   if (!readOnce || millis() - lastReadingMs >= REPORT_INTERVAL_MS)
   {
     readOnce = true;
     lastReadingMs = millis();
+    samplePending = true;
+    checkNow = true;
+    // ensureWiFi() lives only on this cadence, never in the 1 s retry below: with WiFi down it blocks for up to
+    // WIFI_CONNECT_TIMEOUT_MS, so calling it every second would freeze the loop (MQTT keepalive, the setup portal)
+    // almost permanently. NTP can't sync without WiFi anyway, so retrying WiFi every REPORT_INTERVAL_MS is enough.
     ensureWiFi();
+  }
 
-    // A sample without a trustworthy timestamp can't be placed on the pond's timeline, so skip it until NTP syncs.
+  // A sample without a trustworthy timestamp can't be placed on the pond's timeline, so it waits until NTP syncs.
+  // It waits on a 1 s check rather than the report cadence because each miss used to cost a whole
+  // REPORT_INTERVAL_MS, which kept the unit from showing online for a long time after boot (2026-10-02 demo).
+  if (samplePending && (checkNow || millis() - lastNtpCheckMs >= NTP_RETRY_INTERVAL_MS))
+  {
+    lastNtpCheckMs = millis();
     if (uplink::timeSynced())
     {
+      // Read the sensors now, not when the sample was armed, so the reading is fresh; the cadence restarts from
+      // this first real enqueue.
       uplink::enqueue(sensors::readAll());
+      samplePending = false;
+      lastReadingMs = millis();
+      lastNtpLogMs = 0;
     }
-    else
+    else if (lastNtpLogMs == 0 || millis() - lastNtpLogMs >= NTP_WAIT_LOG_INTERVAL_MS)
     {
-      Serial.println("[time] waiting for NTP sync, sample skipped");
+      Serial.println("[time] waiting for NTP sync, sample deferred");
+      lastNtpLogMs = millis();
     }
   }
 
