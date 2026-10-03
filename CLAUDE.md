@@ -42,7 +42,10 @@ read anywhere from 0 to several hundred NTU on that rig. **Calibrate from the se
 unstable signal (spread over 150 mV sensor-side), an implausible one (median outside 2870–3580 mV) or a lost one,
 because a single burst can land on either of the two levels and a turbid or disconnected probe must never become
 the reference. `cal set <mV>` and the portal's manual field go through the same window. Re-calibrate if the
-container or probe position changes. The *alert thresholds* are a separate matter: they are the backend's, never
+container or probe position changes. Water muddier than the curve covers is clamped to **3000 NTU**
+(`NTU_CEILING`, below the curve's 2.5 V floor): a real reading, never a fault — a fault omits the value. The
+high-side fault is `over_range` (normalized voltage more than 15 % above 4.2 V). A probe out of the water reads
+about 2119 mV and so reports thousands of NTU; only the portal capture refuses it. The *alert thresholds* are a separate matter: they are the backend's, never
 the firmware's.
 
 Adding a parameter means a field on `SensorSample`, a reader in `lib/Sensors/Sensors.cpp`, an `addValue` line
@@ -82,6 +85,9 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
   (GPIO 2) blinks fast the whole time; the unit takes no readings until WiFi and identity are both saved, at
   which point it restarts. Calibration is not required to finish setup.
 - **Provisioned:** the unit joins its saved WiFi and runs exactly as before.
+- **Field order: set up WiFi and identity first, then calibrate** from a BOOT-hold portal on the provisioned
+  unit. Before setup the radio state lowers clean water below 2870 mV and the capture is refused; the
+  2870–3580 mV window holds only for the USB-fed 5 V rig it was measured on (D-05/D-17).
 - **Calibrate screen** (`/cal`, a menu button added through WiFiManager's custom menu HTML; page in
   `lib/Provisioning/CalibrationPage.h`): shows the live sensor-side mV and NTU about once a second with a
   settling / steady / unstable / signal lost note, the stored clear-water value and its last-calibrated date, a
@@ -105,8 +111,14 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
   are shadowed by handlers registered first that return **404**, because anyone with the shared hotspot
   password could otherwise flash arbitrary firmware or wipe the unit.
 - **Automatic fallback:** if the saved WiFi is unreachable for 10 straight minutes, the hotspot opens on its
-  own for 5 minutes, then closes and goes back to retrying the saved network — repeating for as long as the
-  outage lasts, so a unit nobody can reach in person still has a way back online.
+  own with a 5-minute timeout (`handleOutage()` → `openPortal(TIMED_PORTAL_SECONDS)`). **While it is open the
+  unit does not retry its WiFi** — WiFiManager turns the station interface off and `ensureWiFi()` in
+  `src/main.cpp` returns early. Because `setAPClientCheck(true)` applies to every portal, the timeout keeps
+  resetting **while any phone is joined**, so a joined or auto-rejoining phone keeps a provisioned unit off its
+  WiFi indefinitely; with nobody joined it closes after 5 minutes, retries, and reopens 10 minutes later if the
+  outage continues. Known issue CR-01 (`.planning/phases/05-field-calibration-portal/05-REVIEW.md`): the fix
+  (client check limited to the BOOT-hold portal plus a maximum open time) is deferred until after the demo,
+  before field install; update this bullet when it lands.
 - A plain `pio run -t upload` leaves NVS (so the saved WiFi/identity) alone. Only `pio run -t erase` wipes it —
   use that for "fresh unit" testing.
 - **NVS and flash are not encrypted** (no flash encryption / secure boot: both burn one-way eFuses, out of
@@ -130,7 +142,7 @@ the PlatformIO IDE extension in VS Code.
   `pio device monitor -e nodemcu-32s-bench`. `cal capture` is the same 20 s median capture the portal runs and
   prints its result (saved median or refusal reason) when it finishes; the CSV keeps its own 1 s rows meanwhile,
   as an independent cross-check of the capture median.
-- Host suites (no board needed): `pio test -e native` — this now runs **two** suites, `test_wireformat` and
+- Host suites (no board needed): `pio test -e native` (expect 68/68 on fw 0.6.1) — this now runs **two** suites, `test_wireformat` and
   `test_turbidity_math`, because `[env:native]`'s `test_filter` lists both by name. A native suite missing
   from that filter is skipped silently, so the run looks green while proving nothing about it.
 - On-device HMAC suite (needs a connected ESP32): `pio test -e nodemcu-32s -f test_signing`
@@ -267,8 +279,10 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
 - `test/` holds the PlatformIO Unit Testing (Unity) suites:
   - `test/test_wireformat/` — native, `[env:native]`. Byte-for-byte parity with the backend's golden vectors,
     entry point `int main()`. There are **8** vectors, the eighth being `diagnostics-and-sensor-status` (the
-    0.6.0 `diag` + `sensors` body). `FIRMWARE_VERSION` (0.6.0) is inside the signed body, so a bump moves every
-    signature — including the hand-written vector-0 bytes in `test_hex_is_lowercase`.
+    0.6.0 `diag` + `sensors` body). The suite keeps its **own** `FIRMWARE_VERSION` constant (0.6.0), matching
+    the version inside the vectors' signed bodies, so bumping `src/main.cpp` (as 0.6.1 did) does not touch them;
+    only a wire-format change needs the vectors regenerated from the backend (which also moves the hand-written
+    vector-0 bytes in `test_hex_is_lowercase`).
   - `test/test_turbidity_math/` — native, `[env:native]`. Pins every constant and every fault decision in
     `lib/TurbidityMath/`, entry point `int main()`.
   - `test/test_signing/` — on-device, `[env:nodemcu-32s]`. The real `mbedtls_md_hmac` against the vectors'
