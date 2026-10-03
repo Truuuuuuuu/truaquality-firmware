@@ -16,7 +16,7 @@
 // `node scripts/sync-golden-vectors.mjs`). 0.4.0 is the first version that can report turbidity; 0.5.0 also
 // reports wifiSsid; 0.6.0 also reports diag and per-sensor status. That is how Device.firmwareVersion tells
 // the backend which units can.
-static const char *FIRMWARE_VERSION = "0.6.0";
+static const char *FIRMWARE_VERSION = "0.6.1";
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 static const unsigned long NTP_RETRY_INTERVAL_MS = 1000;
 static const unsigned long NTP_WAIT_LOG_INTERVAL_MS = 10000;
@@ -333,6 +333,11 @@ void loop()
   // publishes on the normal schedule.
   benchPump();
 #endif
+
+  // Above the provisioning gate on purpose: the turbidity report window must already be warm when the first
+  // report comes, right after provisioning and NTP sync, or that report falls back to 3 back-to-back bursts
+  // sharing one supply level. Pumping it while unprovisioned costs one ~64 ms burst every ~6 s.
+  sensors::pollTurbidity(millis(), REPORT_INTERVAL_MS);
 
   provisioning::loop(WiFi.status() == WL_CONNECTED);
 

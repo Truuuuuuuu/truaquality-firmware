@@ -182,9 +182,21 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
   Sensors library's header.
 - `lib/Sensors/`: `sensors::readAll()` returns a `SensorSample` (temperature °C and turbidity NTU).
   - **Turbidity:** SEN0189-family analog module on **GPIO34** (ADC1), fed through a 10 kΩ / 12 kΩ divider
-    because the sensor swings to 4.5 V and the ESP32's ADC tops out near 3.3 V. One read is a burst of
-    one-shot samples, trimmed and averaged by `lib/TurbidityMath/`, then converted against the unit's stored
-    clear-water reference. It is `NAN` when the pin sits under the fault floor (signal or 5 V unplugged) **and
+    because the sensor swings to 4.5 V and the ESP32's ADC tops out near 3.3 V. One burst is 64 one-shot
+    samples, trimmed and averaged by `lib/TurbidityMath/`, then converted against the unit's stored
+    clear-water reference. **Since firmware 0.6.1 the REPORTED reading is not one burst:** it is the median of
+    the last 5 bursts (`turbidity::REPORT_BURSTS`), taken one every `REPORT_INTERVAL_MS / 5` (~6 s at 30 s) by
+    `sensors::pollTurbidity()`, which `loop()` calls on every pass above the provisioning gate. Why: on
+    2026-10-03 a unit in clean water reported isolated 260.1 / 408.1 NTU spikes when a single burst landed on
+    the low level of the two-level signal. Rules (all in `TurbidityMath.h`, pinned by the `test_window_*`
+    native cases): the median is taken only when a **strict majority** of the window has signal (one failed
+    burst is outvoted), otherwise the newest failed burst is reported so a dead pin still says `no_signal`
+    (recovery after a replug takes up to ~3 bursts, ~18 s); an even valid count drops the oldest valid burst;
+    when the window holds fewer than 3 bursts at report time (first report after boot) `readAll()` tops it up
+    with immediate bursts. **Known limit:** a low-level dwell longer than about 12 s (3 of the 5 bursts) still
+    gets through — the bench saw dwells of 1-17 s — and the hardware cause is not fixed. Calibration capture,
+    `cal show` and the bench CSV still take **one burst per sample** via `readTurbidityMillivolts()`, and window
+    bursts never write `lastTurbidityDiagnostics()`. It is `NAN` when the pin sits under the fault floor (signal or 5 V unplugged) **and
     when the unit is uncalibrated** — either way the parameter is simply absent from the upload. The
     reference is one `uShort` of sensor-side millivolts in NVS, namespace `unit`, key `turb_clear_mv`, owned
     by `lib/Provisioning/` (0 = never calibrated, and the boot log says so once). Calibration is deliberately

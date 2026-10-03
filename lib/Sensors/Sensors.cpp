@@ -105,13 +105,16 @@ namespace
     return turbidity::summarizeBurst(samplesMv, turbidity::BURST_SAMPLES, turbidity::TRIM_EACH_END);
   }
 
-  // The one and only place TurbidityDiagnostics is written, which is why both public read paths go through
-  // it. The bench's per-burst CSV line reads `ntu` after calling readTurbidityMillivolts(), and that column
-  // is where the fault-floor evidence is read from — if the two paths each filled the struct their own way,
-  // the column could go stale or empty without anything failing.
-  turbidity::Burst captureBurst()
+  // The one and only place TurbidityDiagnostics is written. Both public read paths go through it: readAll()
+  // feeds it the window burst it is about to report, readTurbidityMillivolts() (via captureBurst()) the one
+  // burst it just took. The bench's per-burst CSV line reads `ntu` after calling readTurbidityMillivolts(),
+  // and that column is where the fault-floor evidence is read from — if the paths each filled the struct
+  // their own way, the column could go stale or empty without anything failing. Window bursts taken by
+  // pollTurbidity() deliberately do NOT come through here, so they never overwrite what a single-burst
+  // caller (the calibration sampler, the bench CSV) is about to read back.
+  // Returns the burst it recorded, so a caller can only ever go on to use the burst it just described.
+  turbidity::Burst recordDiagnostics(const turbidity::Burst &burst)
   {
-    const turbidity::Burst burst = readBurst();
     lastDiagnostics.rawMeanMv = burst.rawMeanMv;
     lastDiagnostics.filteredPinMv = burst.filteredMv;
     lastDiagnostics.spreadMv = burst.spreadMv;
@@ -119,6 +122,18 @@ namespace
     lastDiagnostics.ntu = turbidity::ntuFromPinMv(burst.filteredMv, clearWaterMv);
     return burst;
   }
+
+  turbidity::Burst captureBurst()
+  {
+    return recordDiagnostics(readBurst());
+  }
+
+  // The report window (firmware 0.6.1): the last turbidity::REPORT_BURSTS bursts, one taken every
+  // REPORT_INTERVAL_MS / REPORT_BURSTS by sensors::pollTurbidity(). Never cleared after a report — it is a
+  // rolling window, and at that spacing the last 5 bursts are the ones since the previous report.
+  turbidity::BurstWindow reportWindow{};
+  unsigned long lastWindowBurstMs = 0;
+  bool windowBurstTaken = false;
 
   struct TurbidityRead
   {
@@ -128,14 +143,25 @@ namespace
 
   TurbidityRead readTurbidity()
   {
-    const turbidity::Burst burst = captureBurst();
+    // Warm-up: the first report after boot (or after a long NTP wait) may find fewer than MIN_REPORT_BURSTS
+    // bursts in the window. Topping it up immediately guarantees the median always comes from an odd count of
+    // at least 3 real bursts. The cost: these bursts are back to back, so they share one supply level and
+    // only that first report is weaker against the two-level signal. Bounded by entry count, so a dead pin
+    // cannot make this loop.
+    for (size_t i = turbidity::topUpNeeded(reportWindow); i > 0; i--)
+    {
+      turbidity::pushBurst(reportWindow, readBurst());
+    }
+
+    // The window's median burst, whole. Then the one diagnostics write, fed that same burst.
+    const turbidity::Burst reported = recordDiagnostics(turbidity::reportBurst(reportWindow));
     // No guard of its own, no local clamp. Every fault decision — below the fault floor, uncalibrated,
     // implausible calibration, far above the reference — lives in turbidity::classify, which ntuFromPinMv
-    // also runs, pinned by native tests. Classifying the same burst captureBurst() just converted keeps the
-    // status and the value from ever disagreeing, and returning the field captureBurst() just computed,
-    // rather than recomputing, guarantees the value on the wire is the number an admin sees in the
+    // also runs, pinned by native tests. Classifying the reported window burst that recordDiagnostics() just
+    // converted keeps the status and the value from ever disagreeing, and returning the field it just
+    // computed, rather than recomputing, guarantees the value on the wire is the number an admin sees in the
     // diagnostics for that same burst.
-    const TurbidityStatus status = toTurbidityStatus(turbidity::classify(burst.filteredMv, clearWaterMv));
+    const TurbidityStatus status = toTurbidityStatus(turbidity::classify(reported.filteredMv, clearWaterMv));
     return TurbidityRead{lastDiagnostics.ntu, status};
   }
 }
@@ -168,6 +194,30 @@ namespace sensors
     clearWaterMv = newClearWaterMv;
   }
 
+  // 2026-10-03, DEVICE001 on firmware 0.6.0 in clean water: 6 of 8 readings were 0.0 NTU and two were
+  // isolated spikes of 260.1 and 408.1 NTU, each opening a backend WARNING, because one reading was one
+  // ~64 ms burst and the clear-water signal sits on one of two levels ~120 mV apart that flip every 1-17 s.
+  // Spreading the report's bursts across the whole interval means a low dwell must last longer than about
+  // 12 s to reach the wire. Cooperative by design: each call costs nothing or one ~64 ms burst, so loop()
+  // keeps servicing MQTT, the setup portal and the bench console. The interval is passed in because
+  // REPORT_INTERVAL_MS lives in unit_config.h, which this library must not include. This is a software
+  // mitigation only — the hardware cause (likely 5 V USB supply dips during WiFi TX) is still open.
+  void pollTurbidity(unsigned long nowMs, unsigned long reportIntervalMs)
+  {
+    const unsigned long spacingMs = reportIntervalMs / turbidity::REPORT_BURSTS;
+    // Unsigned subtraction, so millis() wrapping after ~49.7 days does not stall the window.
+    if (windowBurstTaken && (nowMs - lastWindowBurstMs) < spacingMs)
+    {
+      return;
+    }
+    turbidity::pushBurst(reportWindow, readBurst());
+    lastWindowBurstMs = nowMs;
+    windowBurstTaken = true;
+  }
+
+  // Deliberately ONE burst per call, not the report window: the calibration sampler already takes the
+  // median of 20 one-second samples of this, and the bench CSV exists to characterize the raw two-level
+  // signal, so a median here would hide exactly what it measures.
   float readTurbidityMillivolts()
   {
     const turbidity::Burst burst = captureBurst();

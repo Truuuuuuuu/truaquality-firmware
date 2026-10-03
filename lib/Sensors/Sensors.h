@@ -106,7 +106,14 @@ namespace sensors
   // since this is what produces a calibration in the first place.
   float readTurbidityMillivolts();
 
-  // The intermediates from whichever of readAll() / readTurbidityMillivolts() ran most recently. All NAN
-  // before the first read.
+  // Call on every loop() pass with millis() and REPORT_INTERVAL_MS. Takes at most one burst (~64 ms) per
+  // reportIntervalMs / 5 into the report window whose median readAll() reports (firmware 0.6.1). Required
+  // for readAll()'s turbidity to be windowed at all: without it every report is a 3-burst back-to-back
+  // warm-up that shares one supply level, which is the single-burst spike problem again.
+  void pollTurbidity(unsigned long nowMs, unsigned long reportIntervalMs);
+
+  // The intermediates of the most recent diagnostics write. After readAll(): the reported window burst, so
+  // its ntu is the value on the wire. After readTurbidityMillivolts(): that single burst. Window bursts taken
+  // by pollTurbidity() never write it. All NAN before the first read.
   TurbidityDiagnostics lastTurbidityDiagnostics();
 }
