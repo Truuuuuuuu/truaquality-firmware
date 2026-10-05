@@ -258,11 +258,12 @@ namespace sensors
       lastTurbidityStatus = turbidityRead.status;
     }
 
-    // Positional with all four fields spelled out — a positional initializer that names only temperature
+    // Positional with all six fields spelled out — a positional initializer that names only temperature
     // would value-initialize turbidity to 0.0f, and 0.0f is the one value that must never reach the wire: it
     // is a perfectly plausible "crystal clear water" reading, so it would be stored and charted as a real
     // measurement instead of being omitted. An omitted status would likewise become Ok. wire::buildBody
-    // drops the key entirely for NAN.
-    return SensorSample{celsius, ntu, temperature.status, turbidityRead.status};
+    // drops the key entirely for NAN. There is no pH driver until Phase 10, so pH is NAN + NotFitted, which
+    // keeps both the value and sensors.ph off the wire (the body stays byte-identical to 0.6.1).
+    return SensorSample{celsius, ntu, NAN, temperature.status, turbidityRead.status, PhStatus::NotFitted};
   }
 }

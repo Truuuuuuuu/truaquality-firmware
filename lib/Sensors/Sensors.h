@@ -29,17 +29,36 @@ enum class TurbidityStatus : unsigned char
   OverRange,    // far above the reference: supply drifted up or the calibration is stale
 };
 
+// pH joins the wire contract before its driver exists (Phase 9 fixes the signed bytes, Phase 10 builds the
+// reader). NotFitted means this build has no pH front end at all: wire::buildBody then omits both the ph value
+// and the sensors.ph key, so the body is exactly the 0.6.x shape and no unit ever sends a fabricated pH. The
+// other enumerators reuse tokens already in the backend's SENSOR_STATUSES, because a new token would reject
+// the whole message on any backend that predates it; which real fault maps to which is Phase 10's call.
+enum class PhStatus : unsigned char
+{
+  NotFitted,    // no pH front end in this build: value and sensors.ph are both omitted
+  Ok,
+  NoSignal,     // probe or amplifier output missing
+  Uncalibrated, // no stored buffer calibration
+  OverRange,    // electrode output outside what the calibration can convert
+};
+
 // One reading of every sensor. A value is NAN when its sensor failed or isn't wired up; NAN values are
 // left out of the upload rather than sent as zeros. A status other than Ok always pairs with a NAN value,
 // because the backend omits a parameter's value whenever its status isn't "ok" and the wire must agree.
-// Every SensorSample literal must spell out all four fields: an omitted status value-initializes to Ok,
+// Every SensorSample literal must spell out all six fields: an omitted status value-initializes to Ok,
 // which would report a broken sensor as healthy, just as an omitted value would become a plausible 0.0f.
+// ph sits directly after turbidity (not at the end) on purpose: an old four-field literal then puts a
+// TemperatureStatus where a float belongs and fails to compile, instead of silently sending ph = 0.0 —
+// a plausible-looking and badly wrong reading.
 struct SensorSample
 {
   float temperature; // °C
   float turbidity;   // NTU
+  float ph;          // pH (unitless)
   TemperatureStatus temperatureStatus;
   TurbidityStatus turbidityStatus;
+  PhStatus phStatus;
 };
 
 // The intermediate numbers behind one turbidity acquisition, for the bench CSV and the serial calibration
@@ -87,6 +106,26 @@ namespace sensors
     case TurbidityStatus::Uncalibrated:
       return "uncalibrated";
     case TurbidityStatus::OverRange:
+      return "over_range";
+    }
+    return "no_signal";
+  }
+
+  // NotFitted maps to a fault token, never "ok", so a slip that sent it could not report a missing sensor as
+  // healthy; wire::buildBody never calls this for NotFitted, it omits the key instead.
+  inline const char *statusToken(PhStatus status)
+  {
+    switch (status)
+    {
+    case PhStatus::NotFitted:
+      return "no_signal";
+    case PhStatus::Ok:
+      return "ok";
+    case PhStatus::NoSignal:
+      return "no_signal";
+    case PhStatus::Uncalibrated:
+      return "uncalibrated";
+    case PhStatus::OverRange:
       return "over_range";
     }
     return "no_signal";

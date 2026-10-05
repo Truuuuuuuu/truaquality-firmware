@@ -118,6 +118,12 @@ namespace wire
       JsonObject sensorsObj = doc["sensors"].to<JsonObject>();
       sensorsObj["temperature"] = sensors::statusToken(newest.temperatureStatus);
       sensorsObj["turbidity"] = sensors::statusToken(newest.turbidityStatus);
+      // A build with no pH front end sends no sensors.ph at all, so its body stays the 0.6.x shape. ph comes
+      // after turbidity: that is the backend fixture's key order, and key order is signed bytes.
+      if (newest.phStatus != PhStatus::NotFitted)
+      {
+        sensorsObj["ph"] = sensors::statusToken(newest.phStatus);
+      }
     }
     JsonArray array = doc["samples"].to<JsonArray>();
     // Non-const char[] on purpose: ArduinoJson copies it. A const char* would be stored by reference and
@@ -129,11 +135,13 @@ namespace wire
       formatIso8601(samples[i].recordedAt, timestamp, sizeof(timestamp));
       item["recordedAt"] = timestamp;
       JsonObject values = item["values"].to<JsonObject>();
-      // The order of these two calls IS the JSON key order, and the JSON key order is signed bytes: swapping
-      // them changes every signature the backend verifies. It must match the object-literal order in
-      // backend/scripts/generate-signing-vectors.ts, which is where the golden vectors come from.
+      // The order of these three calls IS the JSON key order, and the JSON key order is signed bytes:
+      // reordering them changes every signature the backend verifies. It must match the object-literal order
+      // in backend/scripts/generate-signing-vectors.ts (temperature, turbidity, ph), which is where the golden
+      // vectors come from. A NotFitted pH is NAN, so addValue drops it like any other missing reading.
       addValue(values, "temperature", samples[i].sample.temperature);
       addValue(values, "turbidity", samples[i].sample.turbidity);
+      addValue(values, "ph", samples[i].sample.ph);
     }
     std::string body;
     serializeJson(doc, body);
