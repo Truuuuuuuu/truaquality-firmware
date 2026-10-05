@@ -363,6 +363,33 @@ void test_not_fitted_ph_never_appears(void)
   TEST_ASSERT_NOT_NULL(strstr(full.c_str(), R"RAW("sensors":{"temperature":"ok","turbidity":"ok"})RAW"));
 }
 
+void test_non_ok_ph_status_never_sends_a_finite_ph(void)
+{
+  // WR-03: the ph value is gated on PhStatus::Ok, not only on isfinite. A finite ph left behind with any other
+  // status (a Phase 10 driver slip, a partial init) must not be signed: the sensors map would say the probe is
+  // missing or faulted while the body carried a pH the backend would store and alert on.
+  const wire::Diagnostics diag{-67, 86400, wire::ResetReason::PowerOn, 201344, 3};
+  const PhStatus statuses[] = {PhStatus::NotFitted, PhStatus::NoSignal, PhStatus::Uncalibrated, PhStatus::OverRange};
+  for (PhStatus status : statuses)
+  {
+    wire::Stamped batch[] = {{T0, {27.5f, 12.3f, 7.1f, TemperatureStatus::Ok, TurbidityStatus::Ok, status}}};
+    std::string plain = wire::buildBody(FIRMWARE_VERSION_PH, nullptr, batch, 1);
+    std::string full = wire::buildBody(FIRMWARE_VERSION_PH, "BFAR-Pond-1", &diag, true, batch, 1);
+    TEST_ASSERT_NULL_MESSAGE(strstr(plain.c_str(), "\"ph\":7"), sensors::statusToken(status));
+    TEST_ASSERT_NULL_MESSAGE(strstr(full.c_str(), "\"ph\":7"), sensors::statusToken(status));
+    TEST_ASSERT_NOT_NULL(strstr(plain.c_str(), R"RAW("values":{"temperature":27.5,"turbidity":12.3}})RAW"));
+    if (status == PhStatus::NotFitted)
+    {
+      TEST_ASSERT_NULL(strstr(full.c_str(), "\"ph\""));
+    }
+    else
+    {
+      // A fault keeps its sensors.ph token; only the value goes.
+      TEST_ASSERT_NOT_NULL(strstr(full.c_str(), "\"ph\":\""));
+    }
+  }
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -394,5 +421,6 @@ int main(int argc, char **argv)
   RUN_TEST(test_diagnostics_and_sensor_status_with_ph_body);
   RUN_TEST(test_ph_status_tokens);
   RUN_TEST(test_not_fitted_ph_never_appears);
+  RUN_TEST(test_non_ok_ph_status_never_sends_a_finite_ph);
   return UNITY_END();
 }

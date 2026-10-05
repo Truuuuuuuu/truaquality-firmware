@@ -138,10 +138,17 @@ namespace wire
       // The order of these three calls IS the JSON key order, and the JSON key order is signed bytes:
       // reordering them changes every signature the backend verifies. It must match the object-literal order
       // in backend/scripts/generate-signing-vectors.ts (temperature, turbidity, ph), which is where the golden
-      // vectors come from. A NotFitted pH is NAN, so addValue drops it like any other missing reading.
-      addValue(values, "temperature", samples[i].sample.temperature);
-      addValue(values, "turbidity", samples[i].sample.turbidity);
-      addValue(values, "ph", samples[i].sample.ph);
+      // vectors come from.
+      const SensorSample &sample = samples[i].sample;
+      addValue(values, "temperature", sample.temperature);
+      addValue(values, "turbidity", sample.turbidity);
+      // pH is gated on its status, not only on isfinite: a non-Ok pH (NotFitted, or a fault) sends no value even
+      // if a driver slip left a finite number in sample.ph, so the body can never carry a pH the sensors map says
+      // is missing or faulted (D-21, 09-REVIEW WR-03). Ok samples are unchanged, so the golden vectors are too.
+      if (sample.phStatus == PhStatus::Ok)
+      {
+        addValue(values, "ph", sample.ph);
+      }
     }
     std::string body;
     serializeJson(doc, body);

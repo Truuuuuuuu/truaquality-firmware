@@ -32,7 +32,8 @@ enum class TurbidityStatus : unsigned char
 // pH joins the wire contract before its driver exists (Phase 9 fixes the signed bytes, Phase 10 builds the
 // reader). NotFitted means this build has no pH front end at all: wire::buildBody then omits both the ph value
 // and the sensors.ph key, so the body is exactly the 0.6.x shape and no unit ever sends a fabricated pH. The
-// other enumerators reuse tokens already in the backend's SENSOR_STATUSES, because a new token would reject
+// ph value is sent only with Ok, whatever sample.ph holds, so a finite number left beside any other status is
+// never signed (09-REVIEW WR-03). The other enumerators reuse tokens already in the backend's SENSOR_STATUSES, because a new token would reject
 // the whole message on any backend that predates it; which real fault maps to which is Phase 10's call.
 enum class PhStatus : unsigned char
 {

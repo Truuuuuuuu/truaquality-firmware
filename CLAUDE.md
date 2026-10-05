@@ -142,7 +142,7 @@ the PlatformIO IDE extension in VS Code.
   `pio device monitor -e nodemcu-32s-bench`. `cal capture` is the same 20 s median capture the portal runs and
   prints its result (saved median or refusal reason) when it finishes; the CSV keeps its own 1 s rows meanwhile,
   as an independent cross-check of the capture median.
-- Host suites (no board needed): `pio test -e native` (expect 73/73 on fw 0.6.1) — this now runs **two** suites, `test_wireformat` and
+- Host suites (no board needed): `pio test -e native` (expect 74/74 since the 09-REVIEW WR-03 case) — this now runs **two** suites, `test_wireformat` and
   `test_turbidity_math`, because `[env:native]`'s `test_filter` lists both by name. A native suite missing
   from that filter is skipped silently, so the run looks green while proving nothing about it.
 - On-device HMAC suite (needs a connected ESP32): `pio test -e nodemcu-32s -f test_signing`
@@ -234,7 +234,9 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     `PhStatus phStatus`, so every literal spells out **all six fields** — an old four-field literal fails to
     compile instead of sending `ph` 0. There is no pH driver until Phase 10: `readAll()` returns `NAN` +
     `PhStatus::NotFitted`, and `wire::buildBody` omits both the `ph` value and `sensors.ph` for `NotFitted`, so
-    a 0.6.1 unit's bytes are unchanged. `statusToken(PhStatus)` reuses existing backend tokens only
+    a 0.6.1 unit's bytes are unchanged. The `ph` value is added **only when `phStatus` is `Ok`** (not merely when
+    it is finite), so a finite `ph` left beside `NotFitted` or a fault is never signed
+    (`test_non_ok_ph_status_never_sends_a_finite_ph`, 09-REVIEW WR-03). `statusToken(PhStatus)` reuses existing backend tokens only
     (`ok` / `no_signal` / `uncalibrated` / `over_range`; `NotFitted` maps to a fault token, never `ok`).
   - `Sensors.h` is deliberately Arduino-free (the rule is recorded in the header) so `[env:native]` can
     compile it; `Sensors.cpp` is free to depend on Arduino because it's never built natively.
