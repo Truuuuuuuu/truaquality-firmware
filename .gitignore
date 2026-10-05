@@ -9,3 +9,5 @@ include/unit_config.h
 
 # PlatformIO device monitor log2file output (bench sessions)
 logs/
+
+.DS_Store
