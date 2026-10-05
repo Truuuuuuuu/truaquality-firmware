@@ -18,6 +18,9 @@
 namespace
 {
   const char *FIRMWARE_VERSION = "0.6.0";
+  // The pH vectors (8-10) are signed at 0.7.0, the first firmware that will emit pH. Like FIRMWARE_VERSION it
+  // matches the vectors' bodies, not src/main.cpp, which stays at 0.6.1 until the Phase 10 driver lands.
+  const char *FIRMWARE_VERSION_PH = "0.7.0";
 
   // 2023-11-14T22:13:20Z — the fixture's first timestamp. The batch vector adds 60 s per sample.
   const std::time_t T0 = 1700000000;
@@ -26,7 +29,11 @@ namespace
 void test_fixture_is_the_expected_one(void)
 {
   // A corrupted or half-generated signing_vectors.h would otherwise let every case below pass vacuously.
-  TEST_ASSERT_EQUAL_UINT(8, GOLDEN_VECTOR_COUNT);
+  TEST_ASSERT_EQUAL_UINT(11, GOLDEN_VECTOR_COUNT);
+  // The pH vectors are appended to the backend fixture, never inserted, so the indices below are stable.
+  TEST_ASSERT_EQUAL_STRING("temperature-turbidity-and-ph", GOLDEN_VECTORS[8].name);
+  TEST_ASSERT_EQUAL_STRING("ph-batch-with-omissions", GOLDEN_VECTORS[9].name);
+  TEST_ASSERT_EQUAL_STRING("diagnostics-and-sensor-status-with-ph", GOLDEN_VECTORS[10].name);
   TEST_ASSERT_EQUAL_STRING("b537560d7b8e2fd2f7ff0f52b9b86ce9ee0f413f9db798ade49d7fedd395b491",
                            GOLDEN_VECTORS[0].signature);
 }
@@ -296,6 +303,66 @@ void test_sensor_status_tokens_match_backend(void)
   TEST_ASSERT_EQUAL_STRING("over_range", sensors::statusToken(TurbidityStatus::OverRange));
 }
 
+void test_temperature_turbidity_and_ph_body(void)
+{
+  // Key order temperature, turbidity, ph is signed bytes: a ph emitted anywhere else is valid JSON with the
+  // same numbers and a signature the backend rejects.
+  wire::Stamped batch[] = {{T0, {27.5f, 12.3f, 7.1f, TemperatureStatus::Ok, TurbidityStatus::Ok, PhStatus::Ok}}};
+  TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[8].body,
+                           wire::buildBody(FIRMWARE_VERSION_PH, nullptr, batch, 1).c_str());
+}
+
+void test_ph_batch_with_omissions_body(void)
+{
+  // pH near both alert edges, then turbidity dropping out while pH stays, then pH dropping out as well:
+  // each missing value must vanish per sample, never leak as 0 or null into its neighbours.
+  wire::Stamped batch[] = {
+      {T0, {27.5f, 12.3f, 6.49f, TemperatureStatus::Ok, TurbidityStatus::Ok, PhStatus::Ok}},
+      {T0 + 60, {27.4f, NAN, 9.51f, TemperatureStatus::Ok, TurbidityStatus::NoSignal, PhStatus::Ok}},
+      {T0 + 120, {27.3f, NAN, NAN, TemperatureStatus::Ok, TurbidityStatus::NoSignal, PhStatus::NoSignal}},
+  };
+  TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[9].body,
+                           wire::buildBody(FIRMWARE_VERSION_PH, nullptr, batch, 3).c_str());
+}
+
+void test_diagnostics_and_sensor_status_with_ph_body(void)
+{
+  // The vector-7 shape with a fitted but faulted pH: sensors.ph comes after turbidity and the pH value is
+  // omitted because its status isn't ok.
+  const wire::Diagnostics diag{-67, 86400, wire::ResetReason::PowerOn, 201344, 3};
+  wire::Stamped batch[] = {
+      {T0, {27.5f, 12.3f, NAN, TemperatureStatus::Ok, TurbidityStatus::Ok, PhStatus::NoSignal}}};
+  TEST_ASSERT_EQUAL_STRING("diagnostics-and-sensor-status-with-ph", GOLDEN_VECTORS[10].name);
+  TEST_ASSERT_EQUAL_STRING(GOLDEN_VECTORS[10].body,
+                           wire::buildBody(FIRMWARE_VERSION_PH, "BFAR-Pond-1", &diag, true, batch, 1).c_str());
+}
+
+void test_ph_status_tokens(void)
+{
+  // Only tokens already in the backend's SENSOR_STATUSES: a new one would reject the whole message on any
+  // backend that predates it.
+  TEST_ASSERT_EQUAL_STRING("ok", sensors::statusToken(PhStatus::Ok));
+  TEST_ASSERT_EQUAL_STRING("no_signal", sensors::statusToken(PhStatus::NoSignal));
+  TEST_ASSERT_EQUAL_STRING("uncalibrated", sensors::statusToken(PhStatus::Uncalibrated));
+  TEST_ASSERT_EQUAL_STRING("over_range", sensors::statusToken(PhStatus::OverRange));
+  // NotFitted is never sent, but if it ever were it must not claim a healthy sensor.
+  TEST_ASSERT_TRUE(strcmp("ok", sensors::statusToken(PhStatus::NotFitted)) != 0);
+}
+
+void test_not_fitted_ph_never_appears(void)
+{
+  // What every Phase 9 unit produces: no pH front end, so neither a ph value nor a sensors.ph key — a pH-less
+  // unit sending "ph":0 would chart a strongly acidic pond that does not exist.
+  const wire::Diagnostics diag{-67, 86400, wire::ResetReason::PowerOn, 201344, 3};
+  wire::Stamped batch[] = {
+      {T0, {27.5f, 12.3f, NAN, TemperatureStatus::Ok, TurbidityStatus::Ok, PhStatus::NotFitted}}};
+  std::string plain = wire::buildBody(FIRMWARE_VERSION, nullptr, batch, 1);
+  std::string full = wire::buildBody(FIRMWARE_VERSION, "BFAR-Pond-1", &diag, true, batch, 1);
+  TEST_ASSERT_NULL(strstr(plain.c_str(), "\"ph\""));
+  TEST_ASSERT_NULL(strstr(full.c_str(), "\"ph\""));
+  TEST_ASSERT_NOT_NULL(strstr(full.c_str(), R"RAW("sensors":{"temperature":"ok","turbidity":"ok"})RAW"));
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -322,5 +389,10 @@ int main(int argc, char **argv)
   RUN_TEST(test_diag_numbers_are_clamped_to_the_backend_ranges);
   RUN_TEST(test_reset_reason_tokens_match_backend);
   RUN_TEST(test_sensor_status_tokens_match_backend);
+  RUN_TEST(test_temperature_turbidity_and_ph_body);
+  RUN_TEST(test_ph_batch_with_omissions_body);
+  RUN_TEST(test_diagnostics_and_sensor_status_with_ph_body);
+  RUN_TEST(test_ph_status_tokens);
+  RUN_TEST(test_not_fitted_ph_never_appears);
   return UNITY_END();
 }

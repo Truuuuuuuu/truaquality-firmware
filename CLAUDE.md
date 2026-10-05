@@ -142,7 +142,7 @@ the PlatformIO IDE extension in VS Code.
   `pio device monitor -e nodemcu-32s-bench`. `cal capture` is the same 20 s median capture the portal runs and
   prints its result (saved median or refusal reason) when it finishes; the CSV keeps its own 1 s rows meanwhile,
   as an independent cross-check of the capture median.
-- Host suites (no board needed): `pio test -e native` (expect 68/68 on fw 0.6.1) — this now runs **two** suites, `test_wireformat` and
+- Host suites (no board needed): `pio test -e native` (expect 73/73 on fw 0.6.1) — this now runs **two** suites, `test_wireformat` and
   `test_turbidity_math`, because `[env:native]`'s `test_filter` lists both by name. A native suite missing
   from that filter is skipped silently, so the run looks green while proving nothing about it.
 - On-device HMAC suite (needs a connected ESP32): `pio test -e nodemcu-32s -f test_signing`
@@ -230,6 +230,12 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     status always means the value is omitted**, enforced in `readAll()`. A status change logs one
     `[sensors] <parameter>: <token>` line; an unchanged one logs nothing.
   - `NAN` for any parameter means "no reading" — it's dropped from the upload rather than sent as a fake `0`.
+  - **pH (wire contract only, Phase 9):** `SensorSample` carries `float ph` (directly after `turbidity`) and
+    `PhStatus phStatus`, so every literal spells out **all six fields** — an old four-field literal fails to
+    compile instead of sending `ph` 0. There is no pH driver until Phase 10: `readAll()` returns `NAN` +
+    `PhStatus::NotFitted`, and `wire::buildBody` omits both the `ph` value and `sensors.ph` for `NotFitted`, so
+    a 0.6.1 unit's bytes are unchanged. `statusToken(PhStatus)` reuses existing backend tokens only
+    (`ok` / `no_signal` / `uncalibrated` / `over_range`; `NotFitted` maps to a fault token, never `ok`).
   - `Sensors.h` is deliberately Arduino-free (the rule is recorded in the header) so `[env:native]` can
     compile it; `Sensors.cpp` is free to depend on Arduino because it's never built natively.
 - `lib/TurbidityMath/`: header-only and Arduino-free — the burst trim, the divider scaling, the vendor curve,
@@ -278,9 +284,11 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
 - `include/` is for project header files shared across `src/` files.
 - `test/` holds the PlatformIO Unit Testing (Unity) suites:
   - `test/test_wireformat/` — native, `[env:native]`. Byte-for-byte parity with the backend's golden vectors,
-    entry point `int main()`. There are **8** vectors, the eighth being `diagnostics-and-sensor-status` (the
-    0.6.0 `diag` + `sensors` body). The suite keeps its **own** `FIRMWARE_VERSION` constant (0.6.0), matching
-    the version inside the vectors' signed bodies, so bumping `src/main.cpp` (as 0.6.1 did) does not touch them;
+    entry point `int main()`. There are **11** vectors: 8 at firmwareVersion 0.6.0, the eighth being
+    `diagnostics-and-sensor-status` (the 0.6.0 `diag` + `sensors` body), then 3 pH vectors at 0.7.0
+    (`temperature-turbidity-and-ph`, `ph-batch-with-omissions`, `diagnostics-and-sensor-status-with-ph`; `ph` is
+    last in `values` and `sensors`). The suite keeps its **own** `FIRMWARE_VERSION` (0.6.0) and
+    `FIRMWARE_VERSION_PH` (0.7.0) constants, matching the versions inside the vectors' signed bodies, so bumping `src/main.cpp` (as 0.6.1 did) does not touch them;
     only a wire-format change needs the vectors regenerated from the backend (which also moves the hand-written
     vector-0 bytes in `test_hex_is_lowercase`).
   - `test/test_turbidity_math/` — native, `[env:native]`. Pins every constant and every fault decision in

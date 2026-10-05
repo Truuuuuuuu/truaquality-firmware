@@ -88,6 +88,33 @@ static const GoldenVector GOLDEN_VECTORS[] = {
     R"RAW(7970b61b299fcf13afe3d807331773b64cb6065907f742d82554b6b312631e7c)RAW",
     R"RAW(v1.7970b61b299fcf13afe3d807331773b64cb6065907f742d82554b6b312631e7c.{"firmwareVersion":"0.6.0","wifiSsid":"BFAR-Pond-1","diag":{"rssi":-67,"uptimeS":86400,"resetReason":"power_on","freeHeap":201344,"queued":3},"sensors":{"temperature":"ok","turbidity":"no_signal"},"samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{"temperature":27.5}}]})RAW",
   },
+  {
+    R"RAW(temperature-turbidity-and-ph)RAW",
+    R"RAW(golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA)RAW",
+    R"RAW(00000000-0000-4000-8000-000000000001)RAW",
+    R"RAW(truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings)RAW",
+    R"RAW({"firmwareVersion":"0.7.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{"temperature":27.5,"turbidity":12.3,"ph":7.1}}]})RAW",
+    R"RAW(7928f8ce635e6e1dfb799a7360be4a6fae2c314b2c65d0581a795b928bb71c98)RAW",
+    R"RAW(v1.7928f8ce635e6e1dfb799a7360be4a6fae2c314b2c65d0581a795b928bb71c98.{"firmwareVersion":"0.7.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{"temperature":27.5,"turbidity":12.3,"ph":7.1}}]})RAW",
+  },
+  {
+    R"RAW(ph-batch-with-omissions)RAW",
+    R"RAW(golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA)RAW",
+    R"RAW(00000000-0000-4000-8000-000000000001)RAW",
+    R"RAW(truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings)RAW",
+    R"RAW({"firmwareVersion":"0.7.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{"temperature":27.5,"turbidity":12.3,"ph":6.49}},{"recordedAt":"2023-11-14T22:14:20Z","values":{"temperature":27.4,"ph":9.51}},{"recordedAt":"2023-11-14T22:15:20Z","values":{"temperature":27.3}}]})RAW",
+    R"RAW(2705ce14b85538d3388e2599cafbd2bfaf183405d688e3ad610833dd357876f5)RAW",
+    R"RAW(v1.2705ce14b85538d3388e2599cafbd2bfaf183405d688e3ad610833dd357876f5.{"firmwareVersion":"0.7.0","samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{"temperature":27.5,"turbidity":12.3,"ph":6.49}},{"recordedAt":"2023-11-14T22:14:20Z","values":{"temperature":27.4,"ph":9.51}},{"recordedAt":"2023-11-14T22:15:20Z","values":{"temperature":27.3}}]})RAW",
+  },
+  {
+    R"RAW(diagnostics-and-sensor-status-with-ph)RAW",
+    R"RAW(golden-secret-not-real-AAAAAAAAAAAAAAAAAAAA)RAW",
+    R"RAW(00000000-0000-4000-8000-000000000001)RAW",
+    R"RAW(truaquality/v1/devices/00000000-0000-4000-8000-000000000001/readings)RAW",
+    R"RAW({"firmwareVersion":"0.7.0","wifiSsid":"BFAR-Pond-1","diag":{"rssi":-67,"uptimeS":86400,"resetReason":"power_on","freeHeap":201344,"queued":3},"sensors":{"temperature":"ok","turbidity":"ok","ph":"no_signal"},"samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{"temperature":27.5,"turbidity":12.3}}]})RAW",
+    R"RAW(2eeb0c438c39147db79bb7ce63151ca38eeb5f395dd57c4bc12b663151d1eb19)RAW",
+    R"RAW(v1.2eeb0c438c39147db79bb7ce63151ca38eeb5f395dd57c4bc12b663151d1eb19.{"firmwareVersion":"0.7.0","wifiSsid":"BFAR-Pond-1","diag":{"rssi":-67,"uptimeS":86400,"resetReason":"power_on","freeHeap":201344,"queued":3},"sensors":{"temperature":"ok","turbidity":"ok","ph":"no_signal"},"samples":[{"recordedAt":"2023-11-14T22:13:20Z","values":{"temperature":27.5,"turbidity":12.3}}]})RAW",
+  },
 };
 
-static const unsigned GOLDEN_VECTOR_COUNT = 8;
+static const unsigned GOLDEN_VECTOR_COUNT = 11;
