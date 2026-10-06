@@ -73,7 +73,15 @@ namespace turbidity
   // to 10 mV: 3,025 - 150 -> 2870, 3,428 + 150 -> 3580. The container matters (the same water read 3,388 mV in
   // one glass and 3,156 mV in another), so this window is a property of this rig's supply and geometry, not of
   // the sensor model; a production unit with a regulated 5 V supply needs its own bench check.
-  constexpr uint16_t CLEAR_WATER_MIN_MV = 2870;
+  //
+  // PROVISIONAL / TEMPORARY (2026-10-06, demo): the minimum above derived to 2870 and is lowered here to 2550.
+  // The bench probe was fully submerged overnight on 2026-10-05 (its top is not waterproof); after drying, and
+  // after a reversed probe plug and the A/D switch left on D were fixed, it reads a steady ~2,700 mV in clean
+  // water on both laptop USB and a phone wall charger (pre-soak it read 3,025-3,428 mV). 2550 is 2,700 minus the
+  // same 150 mV margin. The probe in air on this rig (~2,119 mV) is still refused. The cost: a healthy probe in
+  // air on the 03-06 rig (~2,716 mV) would now be accepted as clear water. REVERT to 2870, or re-derive the window
+  // from a fresh bench run, when the replacement probe arrives.
+  constexpr uint16_t CLEAR_WATER_MIN_MV = 2550;
   constexpr uint16_t CLEAR_WATER_MAX_MV = 3580;
 
   // Checked against the bench (03-06, D-03): the largest excursion above the stored reference seen in any

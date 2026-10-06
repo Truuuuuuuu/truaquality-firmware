@@ -32,14 +32,16 @@ WiFi, and GPIO34 is input-only so no internal pull-up can pull the divider off i
 **10 kΩ / 12 kΩ divider** with a 100 nF bypass to GND, and converted with the vendor quadratic evaluated on a
 ratio-normalized voltage. The 03-06 bench session (`.planning/phases/03-turbidity-sensor-read-bench-characterization/03-BENCH-RECORD.md`)
 replaced the fault floor (**250 mV** at the pin; unplugged reads 142 mV, the muddiest sample never below 357 mV)
-and the plausible clear-water window (**2870–3580 mV** sensor-side) in `lib/TurbidityMath/TurbidityMath.h`; the
-window is a property of that rig's USB-fed 5 V supply, so a unit with a different supply needs its own check.
+and the plausible clear-water window (**2550–3580 mV** sensor-side; minimum provisionally lowered from 2870 on
+2026-10-06 for the water-damaged bench probe — revert when the replacement arrives) in
+`lib/TurbidityMath/TurbidityMath.h`; the window is a property of that rig's USB-fed 5 V supply, so a unit with a different supply needs its own check.
 `HIGH_VOLTAGE_MARGIN` (0.15) was checked against the bench and kept. **`NTU_ROUND_STEP` (0.1) and the vendor
 curve are still PROVISIONAL and unvalidated** — there was no turbidimeter, so the NTU numbers are estimates,
 and the clear-water signal flips between two levels about 120 mV apart (cause unconfirmed), so clear water can
 read anywhere from 0 to several hundred NTU on that rig. **Calibrate from the setup portal's Calibrate screen**
 (or, on the bench image, `cal capture`): both take the **median of 20 one-second samples** and refuse an
-unstable signal (spread over 150 mV sensor-side), an implausible one (median outside 2870–3580 mV) or a lost one,
+unstable signal (spread over 150 mV sensor-side), an implausible one (median outside 2550–3580 mV; minimum provisionally lowered from 2870 on 2026-10-06 for the
+water-damaged bench probe, revert when the replacement arrives) or a lost one,
 because a single burst can land on either of the two levels and a turbid or disconnected probe must never become
 the reference. `cal set <mV>` and the portal's manual field go through the same window. Re-calibrate if the
 container or probe position changes. Water muddier than the curve covers is clamped to **3000 NTU**
@@ -86,8 +88,10 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
   which point it restarts. Calibration is not required to finish setup.
 - **Provisioned:** the unit joins its saved WiFi and runs exactly as before.
 - **Field order: set up WiFi and identity first, then calibrate** from a BOOT-hold portal on the provisioned
-  unit. Before setup the radio state lowers clean water below 2870 mV and the capture is refused; the
-  2870–3580 mV window holds only for the USB-fed 5 V rig it was measured on (D-05/D-17).
+  unit. Before setup the radio state lowers clean water below 2870 mV (the original 03-06 minimum), which got
+  the capture refused; with the provisional 2550 mV minimum (2026-10-06) those low pre-setup captures may now be
+  accepted, so still set up WiFi first. The original 2870–3580 mV window holds only for the USB-fed 5 V rig it
+  was measured on (D-05/D-17).
 - **Calibrate screen** (`/cal`, a menu button added through WiFiManager's custom menu HTML; page in
   `lib/Provisioning/CalibrationPage.h`): shows the live sensor-side mV and NTU about once a second with a
   settling / steady / unstable / signal lost note, the stored clear-water value and its last-calibrated date, a

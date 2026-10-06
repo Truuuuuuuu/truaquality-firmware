@@ -359,7 +359,7 @@ void test_classify_ok_exactly_when_ntu_is_finite(void)
   // The status the unit reports and whether it sends a value must never disagree: "ok" with no value, or a
   // value under a fault status, would contradict itself on the dashboard. Swept across every branch and
   // across calibrations at and around the window's edges.
-  const uint16_t calibrations[] = {0, 2869, 2870, 3200, 3580, 3581};
+  const uint16_t calibrations[] = {0, 2549, 2550, 2869, 2870, 3200, 3580, 3581};
   for (uint16_t clear : calibrations)
   {
     for (int pin = 0; pin <= 3000; pin += 5)
@@ -462,7 +462,8 @@ void test_cal_capture_spread_boundary_is_inclusive_at_150(void)
 
 void test_cal_capture_plausibility_window_boundaries(void)
 {
-  // D-04: the median must sit inside turbidity::isPlausibleClearWaterMv's window (2870-3580 sensor mV).
+  // D-04: the median must sit inside turbidity::isPlausibleClearWaterMv's window (2550-3580 sensor mV, provisional
+  // 2026-10-06; see TurbidityMath.h).
   float window[20];
   fillWindow(window, 3200.0f);
   const turbidity::cal::CaptureResult flat = turbidity::cal::evaluateCapture(window, 20);
@@ -483,9 +484,16 @@ void test_cal_capture_plausibility_window_boundaries(void)
   fillWindow(window, static_cast<float>(turbidity::CLEAR_WATER_MAX_MV + 1));
   TEST_ASSERT_TRUE(isOutcome(window, 20, turbidity::cal::CaptureOutcome::Implausible));
 
-  // Probe in air: the bench read about 2716 mV sensor-side, steady — refused as implausible, not stored.
-  fillWindow(window, 2716.0f);
+  // Probe in air: this rig reads about 2119 mV sensor-side, steady — refused as implausible, not stored. (The
+  // 03-06 bench's air figure, 2716 mV, now falls inside the provisional 2026-10-06 window and would be accepted.)
+  fillWindow(window, 2119.0f);
   TEST_ASSERT_TRUE(isOutcome(window, 20, turbidity::cal::CaptureOutcome::Implausible));
+
+  // The water-damaged bench probe in clean water reads a steady ~2700 mV since 2026-10-05: accepted.
+  fillWindow(window, 2700.0f);
+  const turbidity::cal::CaptureResult damaged = turbidity::cal::evaluateCapture(window, 20);
+  TEST_ASSERT_TRUE(damaged.outcome == turbidity::cal::CaptureOutcome::Accepted);
+  TEST_ASSERT_EQUAL_UINT16(2700, damaged.medianMv);
 }
 
 void test_cal_capture_bench_run01_clear_water_is_accepted(void)
@@ -574,9 +582,9 @@ void test_cal_manual_digits_set_after_trim(void)
   r = turbidity::cal::parseManualMv("\t3100\t");
   TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
   TEST_ASSERT_EQUAL_UINT16(3100, r.mv);
-  r = turbidity::cal::parseManualMv("2870");
+  r = turbidity::cal::parseManualMv("2550");
   TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
-  TEST_ASSERT_EQUAL_UINT16(2870, r.mv);
+  TEST_ASSERT_EQUAL_UINT16(2550, r.mv);
   r = turbidity::cal::parseManualMv("3580");
   TEST_ASSERT_TRUE(r.kind == turbidity::cal::ManualKind::Set);
   TEST_ASSERT_EQUAL_UINT16(3580, r.mv);
@@ -599,7 +607,7 @@ void test_cal_manual_out_of_window_is_implausible(void)
   const turbidity::cal::ManualResult huge = turbidity::cal::parseManualMv("70000");
   TEST_ASSERT_TRUE(huge.kind == turbidity::cal::ManualKind::Implausible);
   TEST_ASSERT_EQUAL_UINT16(0, huge.mv);
-  const char *outside[] = {"0", "2000", "2869", "3581"};
+  const char *outside[] = {"0", "2000", "2119", "2549", "3581"};
   for (const char *text : outside)
   {
     TEST_ASSERT_TRUE(turbidity::cal::parseManualMv(text).kind == turbidity::cal::ManualKind::Implausible);

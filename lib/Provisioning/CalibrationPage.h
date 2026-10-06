@@ -8,7 +8,7 @@
 // with textContent so nothing from the unit or the input box is ever parsed as markup, and it polls with a
 // timeout chain that only schedules the next request after the previous one settles: the portal's web server
 // serves one client at a time, and a fixed-rate timer would stack requests behind a slow reply. The numbers in
-// the message text (150 mV, 2870-3580 mV) are display copy for D-03/D-04; the unit, not the page, decides.
+// the message text (150 mV, 2550-3580 mV) are display copy for D-03/D-04; the unit, not the page, decides.
 namespace provisioning
 {
   namespace calpage
@@ -64,7 +64,7 @@ unstable:"Reading moved by more than 150 mV. Hold the probe still in clean water
 nvs:NVS,cancelled:"Capture cancelled because the setup hotspot closed."};
 var MR={keep:"Nothing changed: the stored value was kept.",
 not_a_number:"Enter a whole number of millivolts, or leave blank to keep the current value.",
-implausible:"That value is not a clear-water reading (expected 2870-3580).",
+implausible:"That value is not a clear-water reading (expected 2550-3580).",
 nvs:NVS,busy:"A capture is running; wait for it to finish."};
 function n(v){return typeof v==="number"&&isFinite(v)}
 function stored(mv,at){
@@ -79,7 +79,7 @@ var c=s.capture,r="";
 E("cap").disabled=c==="capturing";
 if(c==="capturing")r="Capturing "+s.samples+"/"+s.needed+" - hold still";
 else if(c==="accepted")r="Saved: "+s.medianMv+" mV (spread "+(n(s.spreadMv)?s.spreadMv.toFixed(0):"?")+" mV)";
-else if(c==="refused")r=s.reason==="implausible"?s.medianMv+" mV is not a clear-water reading (expected 2870-3580). Clean the probe windows, use clean water, check the wiring.":(RF[s.reason]||"Capture refused.");
+else if(c==="refused")r=s.reason==="implausible"?s.medianMv+" mV is not a clear-water reading (expected 2550-3580). Clean the probe windows, use clean water, check the wiring.":(RF[s.reason]||"Capture refused.");
 T("cr",r);}
 function poll(){
 fetch("/cal/status",{cache:"no-store"}).then(function(r){return r.json()}).then(function(s){
