@@ -43,12 +43,14 @@ namespace ph
   static_assert(MIN_REPORT_BURSTS % 2 == 1, "MIN_REPORT_BURSTS must be odd");
   static_assert(MIN_REPORT_BURSTS <= REPORT_BURSTS, "MIN_REPORT_BURSTS cannot exceed the window size");
 
-  // Wiring facts, not bench numbers: 10 kO on top, 12 kO to GND, and (D-12) a 1 MO pull-down in the GPIO pin's
+  // Wiring facts, not bench numbers: 10 kO on top, 10 kO to GND, and (D-12) a 1 MO pull-down in the GPIO pin's
   // own row, which sits in parallel with the bottom resistor. The pull-down is what drags a floating input to
   // the floor instead of letting it wander to a believable pH. Changing the resistors is the only thing that may
-  // change these lines; the ratio is computed from them so it cannot drift from the parts list.
+  // change these lines; the ratio is computed from them so it cannot drift from the parts list. Not turbidity's
+  // 10k/12k: the 10-03 bench had no 12 kO on hand and fitted 10 kO / 10 kO (measured 9.78 / 9.79 kO); with the
+  // board railed at 4.53 V the pin still sees only ~2.27 V, under the ADC ceiling.
   constexpr float R_TOP_OHM = 10000.0f;
-  constexpr float R_BOTTOM_OHM = 12000.0f;
+  constexpr float R_BOTTOM_OHM = 10000.0f;
   constexpr float R_PULLDOWN_OHM = 1000000.0f;
   constexpr float DIVIDER_RATIO = ((R_BOTTOM_OHM * R_PULLDOWN_OHM) / (R_BOTTOM_OHM + R_PULLDOWN_OHM)) /
                                   (R_TOP_OHM + (R_BOTTOM_OHM * R_PULLDOWN_OHM) / (R_BOTTOM_OHM + R_PULLDOWN_OHM));
