@@ -1,5 +1,6 @@
 #include "Sensors.h"
 
+#include "PhMath.h"
 #include "TurbidityMath.h"
 
 #include <Arduino.h>
@@ -22,6 +23,13 @@ namespace
   // ADC's sample capacitor against the divider's 5.5 kΩ source impedance.
   constexpr uint8_t TURBIDITY_PIN = 34;
 
+  // GPIO35 is ADC1_CH7, for the same reason as GPIO34: WiFi owns ADC2, so only an ADC1 pin keeps reading once
+  // the radio is up. It is input-only (no internal pull that could skew the divider) and not a strapping pin, so
+  // the pH board's output cannot change how the chip boots. The divider and the external 1 MOhm pull-down fitted
+  // in the pin's own row on the bench (D-12) are modelled in ph::DIVIDER_RATIO; the pull-down drags a floating
+  // input to the fault floor instead of letting it drift to a believable pH.
+  constexpr uint8_t PH_PIN = 35;
+
   OneWire oneWire(ONE_WIRE_PIN);
   DallasTemperature ds18b20(&oneWire);
 
@@ -33,6 +41,19 @@ namespace
   // All NAN before the first burst, so a diagnostics readout taken at boot cannot print a zero that looks
   // like a measurement.
   TurbidityDiagnostics lastDiagnostics{NAN, NAN, NAN, NAN, NAN};
+
+  // The unit's stored pH calibration, handed in by main.cpp after provisioning::begin(). Zeroed until then (and
+  // for the whole run on an uncalibrated unit): version 0 fails ph::isValidCalibration, so pH reads
+  // Uncalibrated while temperature and turbidity keep reporting (SENS-09).
+  ph::Calibration phCal{};
+
+  // All NAN before the first burst, for the same reason as lastDiagnostics.
+  PhDiagnostics lastPhDiag{NAN, NAN, NAN, NAN, NAN, NAN};
+
+  // The pH report window (D-15), separate from turbidity's so the two sensors' bursts never mix.
+  ph::BurstWindow phWindow{};
+  unsigned long lastPhBurstMs = 0;
+  bool phBurstTaken = false;
 
   // Exactly representable in float, so == is correct. The DS18B20 holds this in its scratchpad after a
   // power-on reset until a conversion completes; firmware before 0.6.0 published it as a real 85 C reading.
@@ -85,9 +106,30 @@ namespace
     return TurbidityStatus::NoSignal;
   }
 
+  // Same reasoning as toTurbidityStatus: ph::Status lives in PhMath.h, which must not include Sensors.h, so the
+  // pairing is spelled out. NotFitted is deliberately unreachable from here (D-01: 0.7.0 never produces it).
+  PhStatus toPhStatus(ph::Status status)
+  {
+    switch (status)
+    {
+    case ph::Status::Ok:
+      return PhStatus::Ok;
+    case ph::Status::NoSignal:
+      return PhStatus::NoSignal;
+    case ph::Status::Uncalibrated:
+      return PhStatus::Uncalibrated;
+    case ph::Status::OverRange:
+      return PhStatus::OverRange;
+    }
+    return PhStatus::NoSignal;
+  }
+
   // Seeded with Ok so a unit that boots healthy logs nothing, and one that boots faulted logs the fault once.
   TemperatureStatus lastTemperatureStatus = TemperatureStatus::Ok;
   TurbidityStatus lastTurbidityStatus = TurbidityStatus::Ok;
+  // Seeded with NotFitted, which no 0.7.0 path produces, so the first real pH status always logs once — on the
+  // bench that one line says whether the unit came up uncalibrated, faulted or reading.
+  PhStatus lastPhStatus = PhStatus::NotFitted;
 
   // One acquisition. Neither the 1 ms spacing nor the trim is arbitrary: WiFi TX bursts put one-sided spikes
   // on ESP32 ADC reads, so spreading the samples over ~64 ms and dropping the extremes rejects a spike the
@@ -167,6 +209,66 @@ namespace
     const TurbidityStatus status = toTurbidityStatus(turbidity::classify(reported, clearWaterMv));
     return TurbidityRead{lastDiagnostics.ntu, status};
   }
+
+  // One pH acquisition, the same 64-read trimmed burst as turbidity (WiFi TX spikes are the same problem on
+  // every ADC1 pin). The arithmetic stays in ph::summarizeBurst, pinned by test_ph_math.
+  ph::Burst readPhBurst()
+  {
+    uint16_t samplesMv[ph::BURST_SAMPLES];
+    for (size_t i = 0; i < ph::BURST_SAMPLES; i++)
+    {
+      samplesMv[i] = analogReadMilliVolts(PH_PIN);
+      delay(1);
+    }
+    return ph::summarizeBurst(samplesMv, ph::BURST_SAMPLES, ph::TRIM_EACH_END);
+  }
+
+  // The single writer of PhDiagnostics, for the reason recordDiagnostics is turbidity's: readAll() and
+  // readPhMillivolts() must describe a burst the same way, or a bench column could go stale silently. Window
+  // bursts taken by pollPh() never come through here. tempUsedC records what the compensation actually used —
+  // the DS18B20 reading, or Tcal when it was NAN (D-03) — and stays NAN when there is no valid calibration to
+  // take a Tcal from.
+  ph::Burst recordPhDiagnostics(const ph::Burst &burst, float tempC)
+  {
+    lastPhDiag.rawMeanMv = burst.rawMeanMv;
+    lastPhDiag.filteredPinMv = burst.filteredMv;
+    lastPhDiag.spreadMv = burst.spreadMv;
+    lastPhDiag.sensorMv = ph::sensorMvFromPinMv(burst.filteredMv);
+    lastPhDiag.ph = ph::phFromBurst(burst, phCal, tempC);
+    if (std::isfinite(tempC))
+    {
+      lastPhDiag.tempUsedC = tempC;
+    }
+    else if (ph::isValidCalibration(phCal))
+    {
+      lastPhDiag.tempUsedC = ph::fit(phCal).tcalC;
+    }
+    else
+    {
+      lastPhDiag.tempUsedC = NAN;
+    }
+    return burst;
+  }
+
+  struct PhRead
+  {
+    float ph;
+    PhStatus status;
+  };
+
+  // Mirrors readTurbidity: top the window up to MIN_REPORT_BURSTS on the first report (bounded by entry count,
+  // so a dead pin cannot loop), take the window's median burst whole, record it, and classify that same burst so
+  // the status and the value can never disagree. Every fault decision is ph::classify's.
+  PhRead readPh(float tempC)
+  {
+    for (size_t i = ph::topUpNeeded(phWindow); i > 0; i--)
+    {
+      ph::pushBurst(phWindow, readPhBurst());
+    }
+    const ph::Burst reported = recordPhDiagnostics(ph::reportBurst(phWindow), tempC);
+    const PhStatus status = toPhStatus(ph::classify(reported, phCal, tempC));
+    return PhRead{lastPhDiag.ph, status};
+  }
 }
 
 namespace sensors
@@ -187,6 +289,9 @@ namespace sensors
     // No boot log either: the one line about an unusable calibration is Provisioning's, and saying it twice
     // would make an admin hunt for two different faults.
     analogSetPinAttenuation(TURBIDITY_PIN, ADC_11db);
+    // Per pin, never the global attenuation call: each ADC1 input is set for its own signal range, and the pH
+    // board's divided output sits inside the same 11 dB (about 150-2450 mV) eFuse-calibrated range.
+    analogSetPinAttenuation(PH_PIN, ADC_11db);
   }
 
   void setTurbidityCalibration(unsigned short newClearWaterMv)
@@ -241,14 +346,67 @@ namespace sensors
     return lastDiagnostics;
   }
 
+  void setPhCalibration(unsigned short mvA, unsigned short bufA, unsigned short mvB, unsigned short bufB,
+                        short tcalCentiC, unsigned long calAt, unsigned char version)
+  {
+    // Plain assignment, like setTurbidityCalibration: Provisioning owns storage and refusal, and PhMath
+    // re-validates on every use, so a third check here would only be another place to keep in step.
+    phCal = ph::Calibration{mvA, bufA, mvB, bufB, tcalCentiC, static_cast<uint32_t>(calAt), version};
+  }
+
+  // Copy of pollTurbidity's scheduling with ph::REPORT_BURSTS (D-15): a report's pH is the median of bursts
+  // spread across the whole interval, never one ~64 ms burst. Cooperative — nothing or one burst per call.
+  void pollPh(unsigned long nowMs, unsigned long reportIntervalMs)
+  {
+    const unsigned long spacingMs = reportIntervalMs / ph::REPORT_BURSTS;
+    // Unsigned subtraction, so millis() wrapping after ~49.7 days does not stall the window.
+    if (phBurstTaken && (nowMs - lastPhBurstMs) < spacingMs)
+    {
+      return;
+    }
+    ph::pushBurst(phWindow, readPhBurst());
+    lastPhBurstMs = nowMs;
+    phBurstTaken = true;
+  }
+
+  // ONE burst, not the window: the bench console's buffer capture takes its own median of samples, and the
+  // bench CSV characterizes the raw signal, which a median here would hide.
+  float readPhMillivolts(float tempC)
+  {
+    const ph::Burst burst = recordPhDiagnostics(readPhBurst(), tempC);
+    // Not gated on calibration (this is what makes one), but still on the shared signal test: a dead or
+    // floating input must never be captured and stored as a buffer point.
+    if (!ph::isSignalBurst(burst))
+    {
+      return NAN;
+    }
+    return lastPhDiag.sensorMv;
+  }
+
+  PhDiagnostics lastPhDiagnostics()
+  {
+    return lastPhDiag;
+  }
+
+  float readTemperatureCelsius()
+  {
+    const TemperatureRead temperature = readTemperature();
+    return temperature.status == TemperatureStatus::Ok ? temperature.celsius : NAN;
+  }
+
   SensorSample readAll()
   {
     const TemperatureRead temperature = readTemperature();
     const TurbidityRead turbidityRead = readTurbidity();
+    // D-03 / SENS-11: the DS18B20 reading compensates pH only when it is a real measurement. A temperature fault
+    // hands NAN, which PhMath turns into the calibration temperature — an uncompensated pH, never a missing one,
+    // because a broken temperature probe must not take the pH reading down with it.
+    const PhRead phRead = readPh(temperature.status == TemperatureStatus::Ok ? temperature.celsius : NAN);
 
     // The invariant the backend and the wire share: a status other than ok never travels with a value.
     const float celsius = temperature.status == TemperatureStatus::Ok ? temperature.celsius : NAN;
     const float ntu = turbidityRead.status == TurbidityStatus::Ok ? turbidityRead.ntu : NAN;
+    const float phValue = phRead.status == PhStatus::Ok ? phRead.ph : NAN;
 
     // Only on a change, never every read: a probe that stays unplugged would otherwise print the same line
     // every REPORT_INTERVAL_MS forever.
@@ -262,13 +420,18 @@ namespace sensors
       Serial.printf("[sensors] turbidity: %s\n", sensors::statusToken(turbidityRead.status));
       lastTurbidityStatus = turbidityRead.status;
     }
+    if (phRead.status != lastPhStatus)
+    {
+      Serial.printf("[sensors] ph: %s\n", sensors::statusToken(phRead.status));
+      lastPhStatus = phRead.status;
+    }
 
     // Positional with all six fields spelled out — a positional initializer that names only temperature
     // would value-initialize turbidity to 0.0f, and 0.0f is the one value that must never reach the wire: it
     // is a perfectly plausible "crystal clear water" reading, so it would be stored and charted as a real
     // measurement instead of being omitted. An omitted status would likewise become Ok. wire::buildBody
-    // drops the key entirely for NAN. There is no pH driver until Phase 10, so pH is NAN + NotFitted, which
-    // keeps both the value and sensors.ph off the wire (the body stays byte-identical to 0.6.1).
-    return SensorSample{celsius, ntu, NAN, temperature.status, turbidityRead.status, PhStatus::NotFitted};
+    // drops the key entirely for NAN. Since 0.7.0 pH always carries a real status (never NotFitted), so
+    // sensors.ph is always sent and the ph value only with ok.
+    return SensorSample{celsius, ntu, phValue, temperature.status, turbidityRead.status, phRead.status};
   }
 }
