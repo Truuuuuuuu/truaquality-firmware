@@ -181,9 +181,9 @@ the PlatformIO IDE extension in VS Code.
 - Prove the bench consoles are absent from the shipping image (after building both environments):
   `strings .pio/build/nodemcu-32s/firmware.elf | grep -c 'ph-bench'` (and `'turbidity-bench'`) must print 0;
   the same greps on `.pio/build/nodemcu-32s-bench/firmware.elf` must be non-zero.
-- Host suites (no board needed): `pio test -e native` (expect **111/111**, measured after plan 10-06). It runs
-  **three** suites, `test_wireformat`, `test_turbidity_math` and `test_ph_math`, because `[env:native]`'s
-  `test_filter` lists all three by name. A native suite missing from that filter is skipped silently, so the run
+- Host suites (no board needed): `pio test -e native` (expect **138/138**, measured after plan 11-01). It runs
+  **four** suites, `test_wireformat`, `test_turbidity_math`, `test_ph_math` and `test_ph_acceptance`, because
+  `[env:native]`'s `test_filter` lists all four by name. A native suite missing from that filter is skipped silently, so the run
   looks green while proving nothing about it. To run one suite: `pio test -e native -f test_ph_math`.
 - On-device HMAC suite (needs a connected ESP32): `pio test -e nodemcu-32s -f test_signing`
 - Compile the on-device suite without a board:
@@ -206,7 +206,7 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
 
 - `platformio.ini` defines three environments. `[env:nodemcu-32s]` is the real firmware: `espressif32`
   platform, Arduino framework, `test_filter = test_signing`. `[env:native]` is a host-only build for the pure
-  modules: `platform = native`, `test_filter = test_wireformat, test_turbidity_math, test_ph_math`, plus `lib_ignore` and
+  modules: `platform = native`, `test_filter = test_wireformat, test_turbidity_math, test_ph_math, test_ph_acceptance`, plus `lib_ignore` and
   `-Ilib/Sensors` (the long comment in the file explains why both halves of that pair are needed — don't
   delete either). `lib_deps` for the board: **`bblanchon/ArduinoJson@7.4.3` pinned exactly, not `^7`**,
   because both environments must resolve the *same* ArduinoJson — a float-formatting change between two 7.x
@@ -370,6 +370,9 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     `lib/TurbidityMath/`, entry point `int main()`.
   - `test/test_ph_math/` — native, `[env:native]`. Pins `lib/PhMath/` (fit, compensation, classify, calibration
     validity, buffer table, capture helpers), entry point `int main()`.
+  - `test/test_ph_acceptance/` — native, `[env:native]`. Pins `lib/PhMath/PhAcceptance.h` (`ph::accept::`, Phase
+    11's portal rules: picker/slot parsing, pair refusals, held-pair keep-first, Save check, health verdict,
+    calibration age, tokens), entry point `int main()`.
   - `test/test_signing/` — on-device, `[env:nodemcu-32s]`. The real `mbedtls_md_hmac` against the vectors'
     signatures, entry point `setup()`/`loop()`. It never prints a secret or a full payload: serial is
     unencrypted.
