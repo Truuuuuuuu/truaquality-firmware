@@ -181,7 +181,7 @@ the PlatformIO IDE extension in VS Code.
 - Prove the bench consoles are absent from the shipping image (after building both environments):
   `strings .pio/build/nodemcu-32s/firmware.elf | grep -c 'ph-bench'` (and `'turbidity-bench'`) must print 0;
   the same greps on `.pio/build/nodemcu-32s-bench/firmware.elf` must be non-zero.
-- Host suites (no board needed): `pio test -e native` (expect **138/138**, measured after plan 11-01). It runs
+- Host suites (no board needed): `pio test -e native` (expect **160/160**, measured after plan 11-04). It runs
   **four** suites, `test_wireformat`, `test_turbidity_math`, `test_ph_math` and `test_ph_acceptance`, because
   `[env:native]`'s `test_filter` lists all four by name. A native suite missing from that filter is skipped silently, so the run
   looks green while proving nothing about it. To run one suite: `pio test -e native -f test_ph_math`.
@@ -372,7 +372,8 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     validity, buffer table, capture helpers), entry point `int main()`.
   - `test/test_ph_acceptance/` — native, `[env:native]`. Pins `lib/PhMath/PhAcceptance.h` (`ph::accept::`, Phase
     11's portal rules: picker/slot parsing, pair refusals, held-pair keep-first, Save check, health verdict,
-    calibration age, tokens), entry point `int main()`.
+    calibration age, tokens, and the plan 11-04 capture engine: chronological drift, spread backstop,
+    settle timeout, temperature/signal refusals, live state), entry point `int main()`.
   - `test/test_signing/` — on-device, `[env:nodemcu-32s]`. The real `mbedtls_md_hmac` against the vectors'
     signatures, entry point `setup()`/`loop()`. It never prints a secret or a full payload: serial is
     unencrypted.
