@@ -119,7 +119,7 @@ namespace
     lastDiagnostics.filteredPinMv = burst.filteredMv;
     lastDiagnostics.spreadMv = burst.spreadMv;
     lastDiagnostics.sensorMv = turbidity::sensorMvFromPinMv(burst.filteredMv);
-    lastDiagnostics.ntu = turbidity::ntuFromPinMv(burst.filteredMv, clearWaterMv);
+    lastDiagnostics.ntu = turbidity::ntuFromBurst(burst, clearWaterMv);
     return burst;
   }
 
@@ -155,13 +155,16 @@ namespace
 
     // The window's median burst, whole. Then the one diagnostics write, fed that same burst.
     const turbidity::Burst reported = recordDiagnostics(turbidity::reportBurst(reportWindow));
-    // No guard of its own, no local clamp. Every fault decision — below the fault floor, uncalibrated,
-    // implausible calibration, far above the reference — lives in turbidity::classify, which ntuFromPinMv
-    // also runs, pinned by native tests. Classifying the reported window burst that recordDiagnostics() just
-    // converted keeps the status and the value from ever disagreeing, and returning the field it just
-    // computed, rather than recomputing, guarantees the value on the wire is the number an admin sees in the
-    // diagnostics for that same burst.
-    const TurbidityStatus status = toTurbidityStatus(turbidity::classify(reported.filteredMv, clearWaterMv));
+    // No guard of its own, no local clamp. Every fault decision — below the fault floor, too unstable within
+    // the burst (the D-12 spread backstop for a floating input), uncalibrated, implausible calibration, far
+    // above the reference — lives in the burst-level turbidity::classify, which ntuFromBurst also runs, pinned
+    // by native tests. It must be the burst-level one, given the WHOLE burst: when most of the window is
+    // unstable, reportBurst() returns an unstable burst whose filteredMv can look like valid clear water, and
+    // the scalar classify on filteredMv alone would call it Ok (Pitfall 5). Classifying the reported window
+    // burst that recordDiagnostics() just converted keeps the status and the value from ever disagreeing, and
+    // returning the field it just computed, rather than recomputing, guarantees the value on the wire is the
+    // number an admin sees in the diagnostics for that same burst.
+    const TurbidityStatus status = toTurbidityStatus(turbidity::classify(reported, clearWaterMv));
     return TurbidityRead{lastDiagnostics.ntu, status};
   }
 }
@@ -222,9 +225,11 @@ namespace sensors
   {
     const turbidity::Burst burst = captureBurst();
     // Deliberately not gated on calibration: this is the number a clear-water capture stores, so refusing it
-    // on an uncalibrated unit would make a unit impossible to calibrate. The fault floor still applies,
-    // because a dead signal or a dead 5 V supply must not hand back a confident millivolt figure either.
-    if (std::isnan(burst.filteredMv) || burst.filteredMv < turbidity::FAULT_FLOOR_PIN_MV)
+    // on an uncalibrated unit would make a unit impossible to calibrate. The shared burst signal test still
+    // applies — the fault floor, because a dead signal or a dead 5 V supply must not hand back a confident
+    // millivolt figure, and the D-12 spread backstop, so a floating or loose input can never be captured and
+    // stored as the clear-water reference.
+    if (!turbidity::isSignalBurst(burst))
     {
       return NAN;
     }
