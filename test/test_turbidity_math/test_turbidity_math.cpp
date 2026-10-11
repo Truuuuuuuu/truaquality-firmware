@@ -842,6 +842,109 @@ void test_window_signal_test_matches_classify_floor(void)
   TEST_ASSERT_TRUE(turbidity::classify(249.9f, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
 }
 
+// ---- Instability backstop (D-12, phase 10): a floating input is no signal even when its level looks valid ----
+
+void test_unstable_burst_is_no_signal_even_at_clear_water_level(void)
+{
+  // F-1a (TURBIDITY_TEST_RESULTS section 5f): a floating GPIO34 passed the fault floor and read 3000 NTU. A
+  // burst sitting exactly at the calibrated clear-water level but with a kept-window spread over the backstop
+  // must be NoSignal; the scalar classify, which never sees the spread, still says Ok for the same level.
+  const turbidity::Burst unstable = burstAt(HIGH_PIN_MV, 0.0f, turbidity::MAX_BURST_SPREAD_PIN_MV + 0.1f);
+  TEST_ASSERT_FALSE(turbidity::isSignalBurst(unstable));
+  TEST_ASSERT_TRUE(turbidity::classify(unstable, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
+  TEST_ASSERT_TRUE(std::isnan(turbidity::ntuFromBurst(unstable, INCIDENT_CLEAR_MV)));
+  TEST_ASSERT_TRUE(turbidity::classify(HIGH_PIN_MV, INCIDENT_CLEAR_MV) == turbidity::Status::Ok);
+
+  // A stable burst at the same level is a real 0 NTU reading.
+  const turbidity::Burst stable = burstAt(HIGH_PIN_MV);
+  TEST_ASSERT_TRUE(turbidity::classify(stable, INCIDENT_CLEAR_MV) == turbidity::Status::Ok);
+  TEST_ASSERT_FLOAT_WITHIN(NTU_TOLERANCE, 0.0f, turbidity::ntuFromBurst(stable, INCIDENT_CLEAR_MV));
+}
+
+void test_window_signal_test_matches_burst_classify_backstop(void)
+{
+  // The backstop boundary is inclusive: a spread of exactly MAX_BURST_SPREAD_PIN_MV is still signal.
+  TEST_ASSERT_TRUE(turbidity::isSignalBurst(burstAt(1000.0f, 0.0f, turbidity::MAX_BURST_SPREAD_PIN_MV)));
+  TEST_ASSERT_FALSE(turbidity::isSignalBurst(burstAt(1000.0f, 0.0f, turbidity::MAX_BURST_SPREAD_PIN_MV + 0.1f)));
+
+  // A NAN spread is not "unstable": the floor on filteredMv governs.
+  TEST_ASSERT_TRUE(turbidity::isSignalBurst(burstAt(1000.0f, 0.0f, NAN)));
+  TEST_ASSERT_FALSE(turbidity::isSignalBurst(burstAt(NAN, NAN, NAN)));
+  TEST_ASSERT_FALSE(turbidity::isSignalBurst(burstAt(249.9f, 0.0f, NAN)));
+
+  // The window's test and the burst-level classify agree on the signal decision, both sides of both rules.
+  const turbidity::Burst cases[] = {
+      burstAt(HIGH_PIN_MV, 0.0f, 10.0f),
+      burstAt(HIGH_PIN_MV, 0.0f, turbidity::MAX_BURST_SPREAD_PIN_MV),
+      burstAt(HIGH_PIN_MV, 0.0f, turbidity::MAX_BURST_SPREAD_PIN_MV + 0.1f),
+      burstAt(HIGH_PIN_MV, 0.0f, NAN),
+      burstAt(249.9f, 0.0f, 10.0f),
+      burstAt(DEAD_PIN_MV, 0.0f, turbidity::MAX_BURST_SPREAD_PIN_MV + 50.0f),
+      burstAt(NAN, NAN, NAN),
+  };
+  for (const turbidity::Burst &b : cases)
+  {
+    const bool noSignal = turbidity::classify(b, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal;
+    TEST_ASSERT_EQUAL(!turbidity::isSignalBurst(b), noSignal);
+  }
+}
+
+void test_burst_classify_ok_exactly_when_ntu_is_finite(void)
+{
+  // The burst-level pair keeps the scalar pair's guarantee: "ok" exactly when a value is sent. Also checks that
+  // for a stable burst the burst-level classify equals the scalar one, so stable behaviour is unchanged.
+  const uint16_t calibrations[] = {0, 2549, 2550, 2869, 2870, 3200, 3580, 3581};
+  const float spreads[] = {10.0f, turbidity::MAX_BURST_SPREAD_PIN_MV + 1.0f};
+  bool sawOk = false;
+  for (uint16_t clear : calibrations)
+  {
+    for (float spread : spreads)
+    {
+      for (int pin = 0; pin <= 3000; pin += 5)
+      {
+        const turbidity::Burst b = burstAt(static_cast<float>(pin), 0.0f, spread);
+        const turbidity::Status s = turbidity::classify(b, clear);
+        const bool ok = s == turbidity::Status::Ok;
+        const bool finite = std::isfinite(turbidity::ntuFromBurst(b, clear));
+        TEST_ASSERT_EQUAL(ok, finite);
+        if (spread <= turbidity::MAX_BURST_SPREAD_PIN_MV)
+        {
+          TEST_ASSERT_TRUE(s == turbidity::classify(b.filteredMv, clear));
+          if (ok)
+          {
+            sawOk = true;
+            TEST_ASSERT_EQUAL_FLOAT(turbidity::ntuFromPinMv(b.filteredMv, clear), turbidity::ntuFromBurst(b, clear));
+          }
+        }
+        else
+        {
+          TEST_ASSERT_TRUE(s == turbidity::Status::NoSignal);
+        }
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(sawOk);
+}
+
+void test_majority_unstable_window_reports_no_ntu(void)
+{
+  // Pitfall 5: 3 of 5 bursts are unstable but their filtered value is a valid clear-water level. The window must
+  // treat them as failed, hand back one of them, and the burst-level pair must refuse it. Fed to the SCALAR
+  // classify, the same returned burst would wrongly read Ok, which is why Sensors.cpp only uses the burst pair.
+  const float unstableSpread = turbidity::MAX_BURST_SPREAD_PIN_MV + 50.0f;
+  turbidity::BurstWindow w{};
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV, 1.0f, unstableSpread));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV, 2.0f, 10.0f));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV, 3.0f, unstableSpread));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV, 4.0f, 10.0f));
+  turbidity::pushBurst(w, burstAt(HIGH_PIN_MV, 5.0f, unstableSpread));
+
+  const turbidity::Burst out = turbidity::reportBurst(w);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 5.0f, out.rawMeanMv); // the newest failed burst
+  TEST_ASSERT_TRUE(turbidity::classify(out, INCIDENT_CLEAR_MV) == turbidity::Status::NoSignal);
+  TEST_ASSERT_TRUE(std::isnan(turbidity::ntuFromBurst(out, INCIDENT_CLEAR_MV)));
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -894,5 +997,9 @@ int main(int argc, char **argv)
   RUN_TEST(test_window_one_transient_failure_does_not_blank_the_reading);
   RUN_TEST(test_window_dead_pin_or_tie_reports_no_signal);
   RUN_TEST(test_window_signal_test_matches_classify_floor);
+  RUN_TEST(test_unstable_burst_is_no_signal_even_at_clear_water_level);
+  RUN_TEST(test_window_signal_test_matches_burst_classify_backstop);
+  RUN_TEST(test_burst_classify_ok_exactly_when_ntu_is_finite);
+  RUN_TEST(test_majority_unstable_window_reports_no_ntu);
   return UNITY_END();
 }
