@@ -50,6 +50,19 @@ high-side fault is `over_range` (normalized voltage more than 15 % above 4.2 V).
 about 2119 mV and so reports thousands of NTU; only the portal capture refuses it. The *alert thresholds* are a separate matter: they are the backend's, never
 the firmware's.
 
+**pH is the current milestone (Phase 10, firmware 0.7.0).** An analog pH board (silkscreen `pH meter V1.1`,
+SEN0161 family) with a glass probe is read on **GPIO35** (ADC1_CH7, input-only, no internal pulls) through the
+same **10 kΩ / 12 kΩ divider** plus a **1 MΩ pull-down** on the pin side, so an unplugged input is pulled down
+instead of floating. The firmware fits a two-point line from two buffers (6.86 + 9.18 on the bench) and uses
+each buffer's real pH at the DS18B20 temperature measured in that cup. It compensates only the electrode slope,
+using the DS18B20 temperature, and falls back to the calibration temperature (Tcal) when the probe faults: the
+reading is then uncompensated, but it is never missing. It reports `ph` with `sensors.ph`. The divider, fault
+floor, instability backstop, slope sign and burst sizes in `lib/PhMath/PhMath.h` are **PROVISIONAL until plan
+10-09** replaces them from the bench CSVs. There is no reference pH meter, so the buffers are the only truth
+points. **Calibration is bench-only until Phase 11:** the serial `ph ...` commands on the bench image (below)
+write the same NVS keys that Phase 11's portal will write. A new unit reports `sensors.ph: "uncalibrated"` with
+no value until it is calibrated.
+
 Adding a parameter means a field on `SensorSample`, a reader in `lib/Sensors/Sensors.cpp`, an `addValue` line
 in `lib/WireFormat/WireFormat.cpp`, and the same id in the backend's `PARAMETER_BOUNDS` and the frontend's
 `PARAMETERS`. Since 0.6.0 it also means a status enum + `sensors::statusToken()` overload in `Sensors.h`, a
@@ -146,9 +159,32 @@ the PlatformIO IDE extension in VS Code.
   `pio device monitor -e nodemcu-32s-bench`. `cal capture` is the same 20 s median capture the portal runs and
   prints its result (saved median or refusal reason) when it finishes; the CSV keeps its own 1 s rows meanwhile,
   as an independent cross-check of the capture median.
-- Host suites (no board needed): `pio test -e native` (expect 74/74 since the 09-REVIEW WR-03 case) — this now runs **two** suites, `test_wireformat` and
-  `test_turbidity_math`, because `[env:native]`'s `test_filter` lists both by name. A native suite missing
-  from that filter is skipped silently, so the run looks green while proving nothing about it.
+- pH bench commands, typed in the same session (the runbook is
+  `.planning/phases/10-firmware-ph-sensing-bench-characterization/bench/README.md`):
+  - `ph show`: one burst (pin mV, sensor mV, spread, temperature used, pH or status token) plus the stored
+    calibration (points, Tcal, date, version, check token, slope mV/pH, slope % of the DFRobot nominal).
+  - `ph capture a <nominal>` / `ph capture b <nominal>`: nominal 4.01, 6.86 or 9.18. Reads the DS18B20 in the
+    buffer at the start and the end, takes the median of the next 20 one-second phcsv rows, and stages the point
+    in RAM with the buffer's real pH at the mean temperature. Refuses on no signal, no temperature, or a cup
+    outside the 20-35 °C buffer table. Writes nothing to NVS.
+  - `ph save [shortedMv]`: needs both points staged. Writes through `provisioning::storePhCalibration`, which
+    refuses a wrong-sign slope or buffers too close together. Prints the slope, the slope % (not a Nernst %),
+    the mV at pH 7, each point's noise and Tcal, plus the offset in pH when the shorted-BNC level is given.
+  - `ph set <mvA> <bufA> <mvB> <bufB> <tcalC>`: re-enters a calibration from the bench record. It goes through
+    the same door.
+  - `ph clear`: removes the calibration (`provisioning::clearPhCalibration`), and the unit reports `uncalibrated`.
+  - The bench image also prints one `[bench] phcsv,millis,ph_raw_mean_mv,ph_filtered_pin_mv,ph_spread_mv,`
+    `ph_sensor_mv,ph,temp_c,turb_filtered_pin_mv,radio_state` row per second, after the turbidity `csv` row.
+    The temperature refreshes every 10th row because the DS18B20 read blocks for about 750 ms.
+    `turb_filtered_pin_mv` is the GPIO34 burst from the same second, so ghosting between the two ADC pins shows
+    up in the log. `radio_state` is `off`/`sta`/`ap`/`ap+sta`, with `-conn` appended while connected.
+- Prove the bench consoles are absent from the shipping image (after building both environments):
+  `strings .pio/build/nodemcu-32s/firmware.elf | grep -c 'ph-bench'` (and `'turbidity-bench'`) must print 0;
+  the same greps on `.pio/build/nodemcu-32s-bench/firmware.elf` must be non-zero.
+- Host suites (no board needed): `pio test -e native` (expect **111/111**, measured after plan 10-06). It runs
+  **three** suites, `test_wireformat`, `test_turbidity_math` and `test_ph_math`, because `[env:native]`'s
+  `test_filter` lists all three by name. A native suite missing from that filter is skipped silently, so the run
+  looks green while proving nothing about it. To run one suite: `pio test -e native -f test_ph_math`.
 - On-device HMAC suite (needs a connected ESP32): `pio test -e nodemcu-32s -f test_signing`
 - Compile the on-device suite without a board:
   `pio test -e nodemcu-32s -f test_signing --without-uploading --without-testing`
@@ -170,7 +206,7 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
 
 - `platformio.ini` defines three environments. `[env:nodemcu-32s]` is the real firmware: `espressif32`
   platform, Arduino framework, `test_filter = test_signing`. `[env:native]` is a host-only build for the pure
-  modules: `platform = native`, `test_filter = test_wireformat, test_turbidity_math`, plus `lib_ignore` and
+  modules: `platform = native`, `test_filter = test_wireformat, test_turbidity_math, test_ph_math`, plus `lib_ignore` and
   `-Ilib/Sensors` (the long comment in the file explains why both halves of that pair are needed — don't
   delete either). `lib_deps` for the board: **`bblanchon/ArduinoJson@7.4.3` pinned exactly, not `^7`**,
   because both environments must resolve the *same* ArduinoJson — a float-formatting change between two 7.x
@@ -179,10 +215,13 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
   provisioning), and (for the DS18B20) `paulstoffregen/OneWire` + `milesburton/DallasTemperature`.
   `[env:nodemcu-32s-bench]` is `[env:nodemcu-32s]` (`extends`) plus `-DTURBIDITY_BENCH=1`, and exists only for
   bench characterization: it compiles in the `cal show` / `cal capture` / `cal set <mV>` serial commands and
-  the CSV log, both wrapped in `#if TURBIDITY_BENCH` in `src/main.cpp` so the shipping image cannot contain
-  them (the check is `strings .pio/build/<env>/firmware.elf | grep -c 'turbidity-bench'` — 0 for
+  the CSV log, plus (since Phase 10) the `ph ...` commands and the `phcsv` log, all wrapped in
+  `#if TURBIDITY_BENCH` in `src/main.cpp` so the shipping image cannot contain them (the check is
+  `strings .pio/build/<env>/firmware.elf | grep -c 'turbidity-bench'` and the same for `'ph-bench'` — 0 for
   `nodemcu-32s`, non-zero for `nodemcu-32s-bench`). **A unit flashed from the bench environment must not be
-  installed at a pond:** anyone with a USB cable could rewrite its calibration. The CSV runs on its own
+  installed at a pond:** anyone with a USB cable could rewrite its turbidity or pH calibration. Both
+  calibrations are in NVS and survive the reflash to `[env:nodemcu-32s]`, which is how a bench-calibrated unit
+  is deployed. The CSV runs on its own
   `BENCH_SAMPLE_INTERVAL_MS` (1 s), separate from `REPORT_INTERVAL_MS`, and is emitted from above the
   provisioning gate so an unprovisioned or offline unit still produces data — a 5-minute run is about 300
   rows. The uplink cadence itself is unchanged: a bench unit still publishes on the normal schedule.
@@ -192,11 +231,20 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
   timestamp).
 - `lib/Provisioning/`: see "Field provisioning" above. Owns the WiFiManager instance, the BOOT-button and
   WiFi-outage triggers for reopening the setup hotspot, the `unit` NVS namespace holding `device_id` /
-  `device_secret` / `turb_clear_mv` / `turb_cal_at`, and the calibration capture engine (a non-blocking 1 Hz
+  `device_secret` / `turb_clear_mv` / `turb_cal_at` (plus the pH keys below), and the calibration capture engine (a non-blocking 1 Hz
   sampler that runs only while the portal is open or a capture is running; a portal capture is cancelled when
   the hotspot closes). Sensor access is injected through `Config` callbacks so this library never includes the
   Sensors library's header.
-- `lib/Sensors/`: `sensors::readAll()` returns a `SensorSample` (temperature °C and turbidity NTU).
+  - **pH calibration NVS (D-17, final layout):** `ph_ver` (`uChar`, = `ph::PH_CAL_VERSION`), `ph_mv_a` /
+    `ph_mv_b` (`uShort`, sensor-side mV), `ph_buf_a` / `ph_buf_b` (`uShort`, the buffer's real pH in hundredths
+    at the capture temperature), `ph_tcal` (`short`, centi-°C) and `ph_cal_at` (`uInt`, Unix seconds, 0 = date
+    unknown). `provisioning::storePhCalibration()` is the **only writer**. It refuses unless
+    `ph::cal::checkCalibration` says `ok` (logging the reason token), then writes with **`ph_ver` as the commit
+    marker**: it removes `ph_ver` first and writes it last, so a power cut mid-write leaves the unit honestly
+    uncalibrated rather than half-calibrated. The new line is applied live. `clearPhCalibration()` also removes
+    `ph_ver` first. PhMath re-validates the stored points on every use. Phase 11's portal writes these same keys
+    through the same door. `main.cpp` hands the stored calibration to Sensors after `provisioning::begin()`.
+- `lib/Sensors/`: `sensors::readAll()` returns a `SensorSample` (temperature °C, turbidity NTU and pH).
   - **Turbidity:** SEN0189-family analog module on **GPIO34** (ADC1), fed through a 10 kΩ / 12 kΩ divider
     because the sensor swings to 4.5 V and the ESP32's ADC tops out near 3.3 V. One burst is 64 one-shot
     samples, trimmed and averaged by `lib/TurbidityMath/`, then converted against the unit's stored
@@ -212,7 +260,10 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     with immediate bursts. **Known limit:** a low-level dwell longer than about 12 s (3 of the 5 bursts) still
     gets through — the bench saw dwells of 1-17 s — and the hardware cause is not fixed. Calibration capture,
     `cal show` and the bench CSV still take **one burst per sample** via `readTurbidityMillivolts()`, and window
-    bursts never write `lastTurbidityDiagnostics()`. It is `NAN` when the pin sits under the fault floor (signal or 5 V unplugged) **and
+    bursts never write `lastTurbidityDiagnostics()`. **Instability backstop (10-04, D-12):** a burst whose kept-window
+    spread is over `turbidity::MAX_BURST_SPREAD_PIN_MV` (300 mV at the pin, PROVISIONAL) counts as no signal,
+    because a floating GPIO34 once read 3000 NTU. The boundary is inclusive, so a spread exactly at the limit is
+    still signal. The window's signal test and the burst-level `classify` share that one check. It is `NAN` when the pin sits under the fault floor (signal or 5 V unplugged) **and
     when the unit is uncalibrated** — either way the parameter is simply absent from the upload. The
     reference is one `uShort` of sensor-side millivolts in NVS, namespace `unit`, key `turb_clear_mv`, owned
     by `lib/Provisioning/` (0 = never calibrated, and the boot log says so once). Calibration is deliberately
@@ -234,14 +285,20 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     status always means the value is omitted**, enforced in `readAll()`. A status change logs one
     `[sensors] <parameter>: <token>` line; an unchanged one logs nothing.
   - `NAN` for any parameter means "no reading" — it's dropped from the upload rather than sent as a fake `0`.
-  - **pH (wire contract only, Phase 9):** `SensorSample` carries `float ph` (directly after `turbidity`) and
-    `PhStatus phStatus`, so every literal spells out **all six fields** — an old four-field literal fails to
-    compile instead of sending `ph` 0. There is no pH driver until Phase 10: `readAll()` returns `NAN` +
-    `PhStatus::NotFitted`, and `wire::buildBody` omits both the `ph` value and `sensors.ph` for `NotFitted`, so
-    a 0.6.1 unit's bytes are unchanged. The `ph` value is added **only when `phStatus` is `Ok`** (not merely when
-    it is finite), so a finite `ph` left beside `NotFitted` or a fault is never signed
-    (`test_non_ok_ph_status_never_sends_a_finite_ph`, 09-REVIEW WR-03). `statusToken(PhStatus)` reuses existing backend tokens only
-    (`ok` / `no_signal` / `uncalibrated` / `over_range`; `NotFitted` maps to a fault token, never `ok`).
+  - **pH (driver since Phase 10, firmware 0.7.0):** `PH_PIN` 35, with a per-pin 11 dB attenuation. A burst is
+    64 one-shot reads, trimmed by PhMath. The reported reading is the median of a pH window that
+    `sensors::pollPh()` fills; `loop()` calls it beside `pollTurbidity()`, `ph::REPORT_BURSTS` (5) per interval.
+    `readAll()` passes the DS18B20 temperature, or **NAN when the probe faults**, which PhMath turns into the
+    Tcal fallback. Status comes from `ph::classify` on the reported burst: `no_signal` (NAN, under the fault
+    floor, or over the instability backstop), `uncalibrated` (no valid stored calibration) or `over_range`
+    (calibrated pH outside 2..12; never clamped to the edge). `ok` is the only status that sends a value.
+    `NotFitted` stays in the enum for wire compatibility; `wire::buildBody` omits both `ph` keys for it, and no
+    0.7.0 path produces it. Every `SensorSample` literal must spell out **all six fields**: an old four-field
+    literal fails to compile instead of sending `ph` 0. The `ph` value goes on the wire **only when `phStatus`
+    is `Ok`** (`test_non_ok_ph_status_never_sends_a_finite_ph`, 09-REVIEW WR-03). `statusToken(PhStatus)` reuses
+    existing backend tokens only. The bench console uses three hooks that leave the report windows alone:
+    `readPhMillivolts(tempC)` (one burst, sensor-side mV, not gated on calibration), `lastPhDiagnostics()` and
+    `readTemperatureCelsius()` (one blocking DS18B20 read).
   - `Sensors.h` is deliberately Arduino-free (the rule is recorded in the header) so `[env:native]` can
     compile it; `Sensors.cpp` is free to depend on Arduino because it's never built natively.
 - `lib/TurbidityMath/`: header-only and Arduino-free — the burst trim, the divider scaling, the vendor curve,
@@ -254,6 +311,18 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
   It is deliberately **absent from `[env:native]`'s `lib_ignore`**: a header-only library needs no
   entry there, and `lib_ignore` would strip its include path along with its (non-existent) sources. Its
   PROVISIONAL constants are the ones the bench session replaces.
+- `lib/PhMath/`: header-only and Arduino-free, built on the same pattern as `lib/TurbidityMath/`. `PhMath.h`
+  (`ph::`) holds the burst trim and window, the divider scaling, the calibration struct mirroring the NVS keys,
+  `isValidCalibration`, the two-point `fit`, the slope-only temperature compensation, `classify` (the single
+  home of every pH fault decision) and `phFromBurst`. `PhCalibration.h` (`ph::cal::`) holds what the bench
+  console and Phase 11's portal share: the 20-35 °C buffer table (`bufferPhAt`, refuses outside the table rather
+  than extrapolating), `checkCalibration` / `calCheckToken`, `slopePercentOfNominal` (a % of the DFRobot nominal
+  slope, **not** of Nernst), `offsetPh`, and the capture window's `medianOf` / `spreadOf`. Every bench-dependent
+  constant is labelled **PROVISIONAL until 10-09**. The headers are **C++11 only**: the board compiles them at
+  gnu++11 while `[env:native]` uses gnu++17, so a C++17 helper builds green on the host and fails on the board.
+  They must not include `Sensors.h`, so `ph::Status` is mapped onto `PhStatus` by a switch in `Sensors.cpp`. Like
+  TurbidityMath, PhMath must **never** be added to `[env:native]`'s `lib_ignore`. Pinned on the host by
+  `test/test_ph_math/`.
 - `lib/WireFormat/`: the pure module that owns every byte the backend verifies — the topic string, the
   ISO-8601 timestamp, the JSON body, the signed input (`"<topic>\n<body>"`), lowercase hex, and the
   `v1.<sig>.<body>` framing. It has no `Arduino.h`, no mbedTLS and no MQTT, which is what lets it compile on
@@ -283,7 +352,7 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
       backend reject the whole message and its readings with it.
     - **`sensors` (since 0.6.0)**: the status tokens of the **newest** sample in the batch — the backend
       stores "status at the newest sample".
-    - JSON parameter keys (`temperature`, and `turbidity` when the unit has a reading for it) must match the
+    - JSON parameter keys (`temperature`, and `turbidity` / `ph` when the unit has a reading for it) must match the
       backend's `PARAMETER_BOUNDS`.
   - **TLS:** verified against ISRG Root X1 (`lib/Uplink/RootCa.h`, Let's Encrypt, valid until 2035), the root
     of HiveMQ Cloud's certificates.
@@ -299,6 +368,8 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     vector-0 bytes in `test_hex_is_lowercase`).
   - `test/test_turbidity_math/` — native, `[env:native]`. Pins every constant and every fault decision in
     `lib/TurbidityMath/`, entry point `int main()`.
+  - `test/test_ph_math/` — native, `[env:native]`. Pins `lib/PhMath/` (fit, compensation, classify, calibration
+    validity, buffer table, capture helpers), entry point `int main()`.
   - `test/test_signing/` — on-device, `[env:nodemcu-32s]`. The real `mbedtls_md_hmac` against the vectors'
     signatures, entry point `setup()`/`loop()`. It never prints a secret or a full payload: serial is
     unencrypted.
