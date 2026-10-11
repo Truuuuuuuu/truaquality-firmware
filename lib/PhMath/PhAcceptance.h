@@ -527,58 +527,212 @@ namespace ph
       Point point;
     };
 
+    // D-07 / Pitfall 4: unlike turbidity's max-min spread, drift has a direction in time, so the ring is unrolled
+    // from its oldest slot (ring[next] once full) before taking the edges. Reading slots 0..4 as "first" on a wrapped
+    // ring would compare the wrong samples and could even flip the sign. NAN for a window that is not full yet, or a
+    // lost sample on either edge (medianOf propagates it).
     inline float driftOf(const float *ring, size_t next, size_t filled)
     {
-      (void)ring;
-      (void)next;
-      (void)filled;
-      return 0.0f;
+      const size_t n = ph::cal::CAPTURE_WINDOW_SAMPLES;
+      if (ring == nullptr || filled != n)
+      {
+        return NAN;
+      }
+      float first[DRIFT_EDGE_SAMPLES];
+      float last[DRIFT_EDGE_SAMPLES];
+      for (size_t i = 0; i < DRIFT_EDGE_SAMPLES; i++)
+      {
+        first[i] = ring[(next + i) % n];
+        last[i] = ring[(next + n - DRIFT_EDGE_SAMPLES + i) % n];
+      }
+      return ph::cal::medianOf(last, DRIFT_EDGE_SAMPLES) - ph::cal::medianOf(first, DRIFT_EDGE_SAMPLES);
     }
 
+    // "Steady" means a capture judged on this window now would pass, the same meaning as turbidity's live state.
     inline LiveState liveState(const float *ring, size_t next, size_t filled)
     {
-      (void)ring;
-      (void)next;
-      (void)filled;
+      if (ring == nullptr || filled == 0)
+      {
+        return LiveState::Settling;
+      }
+      const size_t n = std::min(filled, ph::cal::CAPTURE_WINDOW_SAMPLES);
+      const float spread = ph::cal::spreadOf(ring, n);
+      if (std::isnan(spread))
+      {
+        return LiveState::SignalLost;
+      }
+      if (n < ph::cal::CAPTURE_WINDOW_SAMPLES)
+      {
+        return LiveState::Settling;
+      }
+      const float drift = driftOf(ring, next, n);
+      if (spread > MAX_CAPTURE_SPREAD_SENSOR_MV || std::isnan(drift) || std::fabs(drift) > MAX_DRIFT_SENSOR_MV)
+      {
+        return LiveState::Settling;
+      }
       return LiveState::Steady;
-    }
-
-    inline void startCapture(CaptureEngine &e, uint16_t nominal, float tempC)
-    {
-      (void)e;
-      (void)nominal;
-      (void)tempC;
-    }
-
-    inline void feedCapture(CaptureEngine &e, float sensorMv, float tempC, uint16_t elapsedS)
-    {
-      (void)e;
-      (void)sensorMv;
-      (void)tempC;
-      (void)elapsedS;
-    }
-
-    inline void cancelCapture(CaptureEngine &e)
-    {
-      (void)e;
     }
 
     inline bool isCaptureRunning(const CaptureEngine &e)
     {
-      (void)e;
-      return false;
+      return e.state == CaptureState::Capturing || e.state == CaptureState::Settling;
+    }
+
+    inline void refuseCapture(CaptureEngine &e, Refusal reason, float value)
+    {
+      e.state = CaptureState::Refused;
+      e.reason = reason;
+      e.reasonValue = value;
+    }
+
+    // D-12: the capture needs a real cup temperature inside the buffer table; the printed 25 C value is never used
+    // as a fallback, so a missing probe refuses rather than silently calibrating against the label.
+    inline void startCapture(CaptureEngine &e, uint16_t nominal, float tempC)
+    {
+      e = CaptureEngine{};
+      e.nominal = nominal;
+      e.reason = Refusal::None;
+      e.reasonValue = NAN;
+      e.lastDriftMv = NAN;
+      e.lastNotReady = Refusal::SettleTimeout;
+      if (!isPickerNominal(nominal))
+      {
+        refuseCapture(e, Refusal::Invalid, NAN);
+        return;
+      }
+      if (std::isnan(tempC))
+      {
+        refuseCapture(e, Refusal::NoTemperature, NAN);
+        return;
+      }
+      if (tempC < ph::cal::BUFFER_TABLE_MIN_C || tempC > ph::cal::BUFFER_TABLE_MAX_C)
+      {
+        refuseCapture(e, Refusal::TemperatureOutOfRange, tempC);
+        return;
+      }
+      e.state = CaptureState::Capturing;
+    }
+
+    // elapsedS is wall-clock seconds since startCapture, supplied by the caller from millis(), so the D-15 timeout is
+    // real time even when the sampler skips a second, while this stays pure and host-testable. Once the window is
+    // full every feed re-judges the newest 20 samples; acceptance is checked before the timeout so a window that
+    // passes on the last second still counts.
+    inline void feedCapture(CaptureEngine &e, float sensorMv, float tempC, uint16_t elapsedS)
+    {
+      if (!isCaptureRunning(e))
+      {
+        return;
+      }
+      e.elapsedS = elapsedS;
+      if (std::isnan(sensorMv))
+      {
+        refuseCapture(e, Refusal::SignalLost, NAN);
+        return;
+      }
+      if (std::isnan(tempC))
+      {
+        refuseCapture(e, Refusal::NoTemperature, NAN);
+        return;
+      }
+      if (tempC < ph::cal::BUFFER_TABLE_MIN_C || tempC > ph::cal::BUFFER_TABLE_MAX_C)
+      {
+        refuseCapture(e, Refusal::TemperatureOutOfRange, tempC);
+        return;
+      }
+
+      const size_t n = ph::cal::CAPTURE_WINDOW_SAMPLES;
+      e.mvRing[e.next] = sensorMv;
+      e.tempRing[e.next] = tempC;
+      e.next = (e.next + 1) % n;
+      e.filled = std::min(e.filled + 1, n);
+      if (e.filled < n)
+      {
+        e.state = CaptureState::Capturing;
+        return;
+      }
+
+      const float spread = ph::cal::spreadOf(e.mvRing, n);
+      const float drift = driftOf(e.mvRing, e.next, n);
+      e.lastDriftMv = drift;
+      if (spread <= MAX_CAPTURE_SPREAD_SENSOR_MV && std::fabs(drift) <= MAX_DRIFT_SENSOR_MV)
+      {
+        const float median = ph::cal::medianOf(e.mvRing, n);
+        // T-11-14: range-guard before the uint16 cast; a 0 mV median is a floating or unplugged input.
+        const long rounded = std::isnan(median) ? 0L : std::lround(median);
+        if (rounded <= 0 || rounded > 65535L)
+        {
+          refuseCapture(e, Refusal::SignalLost, NAN);
+          return;
+        }
+        float sumT = 0.0f;
+        for (size_t i = 0; i < n; i++)
+        {
+          sumT += e.tempRing[i];
+        }
+        const float meanT = sumT / static_cast<float>(n);
+        // D-02 / T-11-15: the buffer's real pH at the mean measured cup temperature.
+        const float bufPh = ph::cal::bufferPhAt(e.nominal, meanT);
+        if (std::isnan(bufPh))
+        {
+          refuseCapture(e, Refusal::TemperatureOutOfRange, meanT);
+          return;
+        }
+        e.point = Point{true, e.nominal, static_cast<uint16_t>(rounded),
+                        static_cast<uint16_t>(std::lround(bufPh * 100.0f)), meanT};
+        e.state = CaptureState::Accepted;
+        e.reason = Refusal::None;
+        e.reasonValue = NAN;
+        return;
+      }
+
+      // The spread backstop is checked first, so it names the blocker when both fail.
+      e.lastNotReady = spread > MAX_CAPTURE_SPREAD_SENSOR_MV ? Refusal::Unstable : Refusal::SettleTimeout;
+      e.state = CaptureState::Settling;
+      if (elapsedS >= SETTLE_TIMEOUT_S)
+      {
+        refuseCapture(e, e.lastNotReady,
+                      e.lastNotReady == Refusal::SettleTimeout ? static_cast<float>(SETTLE_TIMEOUT_S) / 60.0f : NAN);
+      }
+    }
+
+    inline void cancelCapture(CaptureEngine &e)
+    {
+      if (isCaptureRunning(e))
+      {
+        refuseCapture(e, Refusal::Cancelled, NAN);
+      }
     }
 
     inline const char *liveStateToken(LiveState s)
     {
-      (void)s;
-      return "";
+      switch (s)
+      {
+      case LiveState::Settling:
+        return "settling";
+      case LiveState::Steady:
+        return "steady";
+      case LiveState::SignalLost:
+        return "signal_lost";
+      }
+      return "signal_lost";
     }
 
     inline const char *captureStateToken(CaptureState s)
     {
-      (void)s;
-      return "";
+      switch (s)
+      {
+      case CaptureState::Idle:
+        return "idle";
+      case CaptureState::Capturing:
+        return "capturing";
+      case CaptureState::Settling:
+        return "settling";
+      case CaptureState::Accepted:
+        return "accepted";
+      case CaptureState::Refused:
+        return "refused";
+      }
+      return "refused";
     }
   }
 }
