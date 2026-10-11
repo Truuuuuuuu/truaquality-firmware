@@ -445,7 +445,32 @@ void test_buffer_table_refuses_outside_range_or_unknown_buffer(void)
   TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(918, 19.9f)));
   TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(918, 35.1f)));
   TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(918, NAN)));
-  TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(700, 25.0f)));
+  // 7.00 became a real row in Phase 11 (11-CONTEXT D-10), so the unknown-nominal probe uses 5.00.
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(500, 25.0f)));
+}
+
+void test_buffer_table_new_rows_exact(void)
+{
+  // Phase 11 D-10: the picker's 4.00, 7.00 and 10.01 rows at 20 / 25 / 30 / 35 C.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.00f, ph::cal::bufferPhAt(400, 20.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.00f, ph::cal::bufferPhAt(400, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.01f, ph::cal::bufferPhAt(400, 30.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.02f, ph::cal::bufferPhAt(400, 35.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.02f, ph::cal::bufferPhAt(700, 20.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.00f, ph::cal::bufferPhAt(700, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.99f, ph::cal::bufferPhAt(700, 30.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.98f, ph::cal::bufferPhAt(700, 35.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 10.06f, ph::cal::bufferPhAt(1001, 20.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 10.01f, ph::cal::bufferPhAt(1001, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.97f, ph::cal::bufferPhAt(1001, 30.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.93f, ph::cal::bufferPhAt(1001, 35.0f));
+}
+
+void test_buffer_table_new_rows_interpolate(void)
+{
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.995f, ph::cal::bufferPhAt(700, 27.5f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 10.035f, ph::cal::bufferPhAt(1001, 22.5f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.015f, ph::cal::bufferPhAt(400, 32.5f));
 }
 
 void test_check_calibration_reports_the_reason(void)
@@ -555,6 +580,8 @@ int main(int argc, char **argv)
   RUN_TEST(test_buffer_table_exact_rows);
   RUN_TEST(test_buffer_table_interpolates_between_rows);
   RUN_TEST(test_buffer_table_refuses_outside_range_or_unknown_buffer);
+  RUN_TEST(test_buffer_table_new_rows_exact);
+  RUN_TEST(test_buffer_table_new_rows_interpolate);
   RUN_TEST(test_check_calibration_reports_the_reason);
   RUN_TEST(test_slope_percent_of_nominal_scales_with_tcal);
   RUN_TEST(test_offset_ph_is_zero_at_isopotential_and_scaled_otherwise);
