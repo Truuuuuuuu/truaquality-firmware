@@ -184,10 +184,24 @@ namespace turbidity
   static_assert(MIN_REPORT_BURSTS % 2 == 1, "MIN_REPORT_BURSTS must be odd");
   static_assert(MIN_REPORT_BURSTS <= REPORT_BURSTS, "MIN_REPORT_BURSTS cannot exceed the window size");
 
-  // The window counts a burst as signal by the same test classify() uses for step 1.
+  // PROVISIONAL (D-12, phase 10): instability backstop for a floating or loose input. F-1a
+  // (TURBIDITY_TEST_RESULTS.md section 5f) showed a floating GPIO34 drifting above the fault floor, reading
+  // 3000 NTU and opening a backend WARNING; the floor alone cannot catch it because the floating level is not
+  // low. What gives it away is that it does not hold still within one burst. 300 mV sits well above the largest
+  // normal kept-window spread seen on the bench (60-71 mV spikes, 03-BENCH-RECORD section 2.5), so a working
+  // probe is never refused for noise. Replaced in 10-09 from the floating-pin CSVs measured before the 1 MOhm
+  // pull-down is fitted. Deliberately separate from PhMath's constant of the same name: each pin has its own
+  // bench data, and one changing must not silently move the other.
+  constexpr float MAX_BURST_SPREAD_PIN_MV = 300.0f;
+
+  // The single burst-level signal test, shared by the report window below and by classify(const Burst&) and
+  // ntuFromBurst(), so the window and the reported status can never disagree. A burst is signal when it clears
+  // the fault floor AND its kept window is not wider than the backstop. Written as !(spread > max) on purpose:
+  // a NAN spread is not evidence of instability, so it passes here and the floor on filteredMv governs (an
+  // all-NAN refused burst still fails, on its NAN filtered value).
   inline bool isSignalBurst(const Burst &b)
   {
-    return hasSignal(b.filteredMv);
+    return hasSignal(b.filteredMv) && !(b.spreadMv > MAX_BURST_SPREAD_PIN_MV);
   }
 
   // A ring of the most recent bursts. A value-initialized BurstWindow{} is empty.
@@ -409,5 +423,30 @@ namespace turbidity
     // of 'std'"; raising the board's standard to fix one call would recompile the whole Arduino core,
     // WiFiManager and espMqttClient for no gain.
     return roundNtu(std::min(std::max(ntu, 0.0f), NTU_CEILING));
+  }
+
+  // Burst-level classify: the instability backstop first, then the scalar decisions. The hardware shell
+  // (Sensors.cpp) must use ONLY this and ntuFromBurst(), never the scalar pair on burst.filteredMv
+  // (Pitfall 5): when most of the window is unstable, reportBurst() hands back an unstable burst whose
+  // filteredMv can look like a perfectly valid clear-water level, and the scalar classify would call it Ok.
+  // The scalar functions stay for the tests and the plausibility logic, which have no spread to judge.
+  inline Status classify(const Burst &burst, uint16_t clearWaterMv)
+  {
+    if (!isSignalBurst(burst))
+    {
+      return Status::NoSignal;
+    }
+    return classify(burst.filteredMv, clearWaterMv);
+  }
+
+  // Burst-level NTU: NAN unless the burst-level classify is Ok, so a status and a value taken from the same
+  // burst cannot disagree (test_burst_classify_ok_exactly_when_ntu_is_finite sweeps it).
+  inline float ntuFromBurst(const Burst &burst, uint16_t clearWaterMv)
+  {
+    if (classify(burst, clearWaterMv) != Status::Ok)
+    {
+      return NAN;
+    }
+    return ntuFromPinMv(burst.filteredMv, clearWaterMv);
   }
 }
