@@ -151,96 +151,318 @@ namespace ph
 
     inline bool isPickerNominal(uint16_t nominal)
     {
-      (void)nominal;
+      for (size_t i = 0; i < PICKER_NOMINAL_COUNT; i++)
+      {
+        if (PICKER_NOMINALS[i] == nominal)
+        {
+          return true;
+        }
+      }
       return false;
     }
 
+    // T-11-01: the page posts exact <select> values, so this is an exact-string whitelist with a length cap and no
+    // numeric parser — no trimming, no signs, no leading zeros, no decimals. Anything else is 0 (refused).
     inline uint16_t parseNominal(const char *s)
     {
-      (void)s;
-      return 1;
+      if (s == nullptr || std::strlen(s) > 4)
+      {
+        return 0;
+      }
+      static const char *const TEXT[PICKER_NOMINAL_COUNT] = {"400", "401", "686", "700", "918", "1001"};
+      for (size_t i = 0; i < PICKER_NOMINAL_COUNT; i++)
+      {
+        if (std::strcmp(s, TEXT[i]) == 0)
+        {
+          return PICKER_NOMINALS[i];
+        }
+      }
+      return 0;
     }
 
     inline Slot parseSlot(const char *s)
     {
-      (void)s;
+      if (s == nullptr)
+      {
+        return Slot::None;
+      }
+      if (std::strcmp(s, "a") == 0)
+      {
+        return Slot::A;
+      }
+      if (std::strcmp(s, "b") == 0)
+      {
+        return Slot::B;
+      }
       return Slot::None;
     }
 
+    // D-18 / D-19 / D-23: slope % of the board nominal (not Nernst) and |offset| in pH, each banded with the
+    // accepting side inclusive; the worse band wins. A NAN in either has no honest verdict, so it is Replace.
     inline Verdict healthVerdict(float slopePct, float offsetPh)
     {
-      (void)slopePct;
-      (void)offsetPh;
-      return Verdict::Good;
+      if (std::isnan(slopePct) || std::isnan(offsetPh))
+      {
+        return Verdict::Replace;
+      }
+      const Verdict slope = slopePct >= HEALTH_SLOPE_GOOD_PCT    ? Verdict::Good
+                            : slopePct >= HEALTH_SLOPE_AGING_PCT ? Verdict::Aging
+                                                                 : Verdict::Replace;
+      const float off = std::fabs(offsetPh);
+      const Verdict offset = off <= HEALTH_OFFSET_GOOD_PH    ? Verdict::Good
+                             : off <= HEALTH_OFFSET_AGING_PH ? Verdict::Aging
+                                                             : Verdict::Replace;
+      return static_cast<uint8_t>(slope) >= static_cast<uint8_t>(offset) ? slope : offset;
     }
 
+    // D-20: 0 is "date unknown" (calibrated without a synced clock); an unsynced clock now cannot age anything; a
+    // stamp in the future (clock stepped back) reads fresh with 0 days rather than a negative age.
     inline AgeResult calibrationAge(uint32_t calAt, long long nowEpoch)
     {
-      (void)calAt;
-      (void)nowEpoch;
-      return AgeResult{Age::Fresh, 0};
+      if (calAt == 0)
+      {
+        return AgeResult{Age::DateUnknown, 0};
+      }
+      if (nowEpoch <= static_cast<long long>(MIN_VALID_EPOCH))
+      {
+        return AgeResult{Age::NoClock, 0};
+      }
+      const long long cal = static_cast<long long>(calAt);
+      if (nowEpoch <= cal)
+      {
+        return AgeResult{Age::Fresh, 0};
+      }
+      const long long diff = nowEpoch - cal;
+      const uint32_t days = static_cast<uint32_t>(diff / static_cast<long long>(SECONDS_PER_DAY));
+      const long long limit = static_cast<long long>(OVERDUE_AFTER_DAYS) * static_cast<long long>(SECONDS_PER_DAY);
+      return AgeResult{diff > limit ? Age::Overdue : Age::Fresh, days};
     }
 
+    // The pair rules, first match wins (RESEARCH Pattern 4): gap on printed nominals, sign, useless slope, offset
+    // window, then the storage-level check as a defensive last word, so nothing accepted here can be refused by
+    // storePhCalibration. cal and line are filled whenever they were computed, for the page to show.
     inline PairResult evaluatePair(const Point &a, const Point &b)
     {
-      (void)a;
-      (void)b;
       PairResult r{};
       r.reason = Refusal::Invalid;
+      r.complete = false;
+      r.slopePct = NAN;
+      r.offsetPh = NAN;
+      r.verdict = Verdict::Replace;
       r.reasonValue = NAN;
-      return r;
-    }
+      r.line = ph::Line{NAN, NAN, NAN};
+      if (!a.held || !b.held)
+      {
+        return r;
+      }
 
-    inline PairResult acceptIntoSlot(HeldPair &held, Slot slot, const Point &p)
-    {
-      (void)held;
-      (void)slot;
-      (void)p;
-      PairResult r{};
-      r.reason = Refusal::Invalid;
-      r.reasonValue = NAN;
+      const int32_t dNominal = static_cast<int32_t>(b.nominal) - static_cast<int32_t>(a.nominal);
+      if (dNominal < static_cast<int32_t>(PORTAL_MIN_BUFFER_GAP_HUNDREDTHS) &&
+          -dNominal < static_cast<int32_t>(PORTAL_MIN_BUFFER_GAP_HUNDREDTHS))
+      {
+        r.reason = Refusal::BuffersTooClose;
+        return r;
+      }
+
+      // Same Tcal rule as the bench console's `ph save`: the mean of the two cup temperatures.
+      const int16_t tcal = static_cast<int16_t>(std::lround((a.tempC + b.tempC) / 2.0f * 100.0f));
+      r.cal = ph::Calibration{a.mv, a.bufHundredths, b.mv, b.bufHundredths, tcal, 0, ph::PH_CAL_VERSION};
+
+      if (a.mv == b.mv)
+      {
+        r.reason = Refusal::SlopeTooSmall;
+        r.reasonValue = 0.0f;
+        return r;
+      }
+      const int32_t dMv = static_cast<int32_t>(b.mv) - static_cast<int32_t>(a.mv);
+      const int32_t dBuf = static_cast<int32_t>(b.bufHundredths) - static_cast<int32_t>(a.bufHundredths);
+      const int sign = ((dMv > 0) == (dBuf > 0)) ? 1 : -1;
+      if (dBuf == 0 || sign != ph::EXPECTED_SLOPE_SIGN)
+      {
+        r.reason = dBuf == 0 ? Refusal::Invalid : Refusal::WrongSign;
+        return r;
+      }
+
+      r.line = ph::fit(r.cal);
+      const float absSlope = std::fabs(r.line.slopeMvPerPh);
+      if (absSlope < MIN_SLOPE_MV_PER_PH)
+      {
+        r.reason = Refusal::SlopeTooSmall;
+        r.reasonValue = absSlope;
+        return r;
+      }
+      if (std::fabs(r.line.mvAtIsopotential - BOARD_ZERO_INPUT_SENSOR_MV) > OFFSET_WINDOW_SENSOR_MV)
+      {
+        r.reason = Refusal::OffsetOutOfWindow;
+        r.reasonValue = r.line.mvAtIsopotential;
+        return r;
+      }
+      if (ph::cal::checkCalibration(r.cal) != ph::cal::CalCheck::Ok)
+      {
+        r.reason = Refusal::Invalid;
+        return r;
+      }
+
+      r.reason = Refusal::None;
+      r.complete = true;
+      r.slopePct = ph::cal::slopePercentOfNominal(r.line);
+      r.offsetPh = ph::cal::offsetPh(r.line, BOARD_ZERO_INPUT_SENSOR_MV);
+      r.verdict = healthVerdict(r.slopePct, r.offsetPh);
       return r;
     }
 
     inline void dropSlot(HeldPair &held, Slot slot)
     {
-      (void)held;
-      (void)slot;
+      const Point empty{};
+      if (slot == Slot::A)
+      {
+        held.a = empty;
+      }
+      else if (slot == Slot::B)
+      {
+        held.b = empty;
+      }
     }
 
-    inline PairResult checkSave(const HeldPair &held, uint16_t postedA, uint16_t postedB)
+    // D-14: points live in RAM only. When the pair is refused, the slot captured second is dropped and the first
+    // is kept, so the user re-captures only the buffer that broke the pair.
+    inline PairResult acceptIntoSlot(HeldPair &held, Slot slot, const Point &p)
     {
-      (void)held;
-      (void)postedA;
-      (void)postedB;
       PairResult r{};
       r.reason = Refusal::Invalid;
+      r.complete = false;
+      r.slopePct = NAN;
+      r.offsetPh = NAN;
+      r.verdict = Verdict::Replace;
       r.reasonValue = NAN;
+      r.line = ph::Line{NAN, NAN, NAN};
+      if (slot == Slot::None)
+      {
+        return r;
+      }
+      Point stored = p;
+      stored.held = true;
+      Point &mine = slot == Slot::A ? held.a : held.b;
+      const Point &other = slot == Slot::A ? held.b : held.a;
+      mine = stored;
+      if (!other.held)
+      {
+        r.reason = Refusal::None;
+        return r;
+      }
+      r = evaluatePair(held.a, held.b);
+      if (r.reason != Refusal::None)
+      {
+        mine.held = false;
+      }
       return r;
     }
 
+    // D-24 / T-11-03: Save re-runs the pair rules and refuses when the nominals the page posts are not the ones
+    // the held points were captured against (the picker was changed after capturing).
+    inline PairResult checkSave(const HeldPair &held, uint16_t postedA, uint16_t postedB)
+    {
+      PairResult r{};
+      r.complete = false;
+      r.slopePct = NAN;
+      r.offsetPh = NAN;
+      r.verdict = Verdict::Replace;
+      r.reasonValue = NAN;
+      r.line = ph::Line{NAN, NAN, NAN};
+      if (!held.a.held || !held.b.held)
+      {
+        r.reason = Refusal::NothingToSave;
+        return r;
+      }
+      if (postedA != held.a.nominal || postedB != held.b.nominal)
+      {
+        r.reason = Refusal::Changed;
+        return r;
+      }
+      return evaluatePair(held.a, held.b);
+    }
+
+    // Every enumerator listed and no default, so a new one is a -Wswitch warning; the fallback is a fault token.
     inline const char *refusalToken(Refusal r)
     {
-      (void)r;
-      return "";
+      switch (r)
+      {
+      case Refusal::None:
+        return "none";
+      case Refusal::NoTemperature:
+        return "no_temperature";
+      case Refusal::TemperatureOutOfRange:
+        return "temp_out_of_range";
+      case Refusal::SignalLost:
+        return "signal_lost";
+      case Refusal::Unstable:
+        return "unstable";
+      case Refusal::SettleTimeout:
+        return "settle_timeout";
+      case Refusal::BuffersTooClose:
+        return "buffers_too_close";
+      case Refusal::WrongSign:
+        return "wrong_sign";
+      case Refusal::SlopeTooSmall:
+        return "slope_too_small";
+      case Refusal::OffsetOutOfWindow:
+        return "offset_out_of_window";
+      case Refusal::Invalid:
+        return "invalid";
+      case Refusal::Cancelled:
+        return "cancelled";
+      case Refusal::Changed:
+        return "changed";
+      case Refusal::NothingToSave:
+        return "nothing_to_save";
+      case Refusal::Nvs:
+        return "nvs";
+      }
+      return "invalid";
     }
 
     inline const char *verdictToken(Verdict v)
     {
-      (void)v;
-      return "";
+      switch (v)
+      {
+      case Verdict::Good:
+        return "good";
+      case Verdict::Aging:
+        return "aging";
+      case Verdict::Replace:
+        return "replace";
+      }
+      return "replace";
     }
 
     inline const char *ageToken(Age a)
     {
-      (void)a;
-      return "";
+      switch (a)
+      {
+      case Age::Fresh:
+        return "fresh";
+      case Age::Overdue:
+        return "overdue";
+      case Age::DateUnknown:
+        return "date_unknown";
+      case Age::NoClock:
+        return "no_clock";
+      }
+      return "date_unknown";
     }
 
     inline const char *slotToken(Slot s)
     {
-      (void)s;
-      return "";
+      switch (s)
+      {
+      case Slot::None:
+        return "none";
+      case Slot::A:
+        return "a";
+      case Slot::B:
+        return "b";
+      }
+      return "none";
     }
   }
 }
