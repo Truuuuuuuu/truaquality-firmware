@@ -7,6 +7,11 @@
 // (Provisioning is in lib_ignore and nothing on the host includes it).
 #include <cstdint>
 
+// For ph::Calibration in the pH calibration door below. PhMath.h is header-only and std-only (no Arduino, no
+// Sensors.h), so including it here couples Provisioning to the pH math, not to the hardware reader; Sensors.h
+// still stays out of this library entirely.
+#include "PhMath.h"
+
 // Lets an admin set a unit's WiFi and device identity from a phone, without reflashing, through a
 // captive-portal hotspot (WiFiManager). WiFi credentials are stored by WiFiManager in the ESP32's own WiFi
 // NVS; DEVICE_ID/DEVICE_SECRET are stored in this module's own "unit" NVS namespace. See firmware/CLAUDE.md
@@ -29,6 +34,11 @@ namespace provisioning
     // How a freshly stored clear-water reference takes effect live, without a reboot, so the admin sees the
     // new NTU at once. May be null; the value is still persisted and is loaded at the next boot.
     void (*applyTurbidityCalibration)(unsigned short clearWaterMv);
+    // How a stored (or cleared) pH calibration takes effect live. Same signature as sensors::setPhCalibration so
+    // main.cpp passes it straight in, primitives because Sensors.h must stay zero-include. May be null; the
+    // calibration is still persisted and is loaded at the next boot.
+    void (*applyPhCalibration)(unsigned short mvA, unsigned short bufA, unsigned short mvB, unsigned short bufB,
+                               short tcalCentiC, unsigned long calAt, unsigned char version);
   };
 
   // Loads any saved identity and, if the unit isn't fully provisioned yet, opens the setup hotspot. Call once
@@ -60,6 +70,23 @@ namespace provisioning
   // can activate a calibration that would turn a healthy sensor into a confidently wrong reading - or when the
   // value could not be written to NVS.
   bool storeTurbidityClearWaterMv(uint16_t clearWaterMv);
+
+  // The unit's pH calibration as read from NVS at begin() (D-17 keys ph_ver, ph_mv_a, ph_buf_a, ph_mv_b,
+  // ph_buf_b, ph_tcal, ph_cal_at). All zeros when never calibrated, which ph::isValidCalibration refuses, so the
+  // unit reports pH uncalibrated while temperature and turbidity keep reporting (SENS-09). Like the turbidity
+  // reference, deliberately NOT part of isProvisioned().
+  ph::Calibration phCalibration();
+
+  // The single door into the pH calibration, and the final layout Phase 11's portal writes (D-17). The caller
+  // supplies mvA/bufA/mvB/bufB/tcalCentiC; the door sets version = ph::PH_CAL_VERSION and calAt from NTP (0 =
+  // date unknown), refuses unless ph::cal::checkCalibration says Ok (logging the reason token), then writes with
+  // ph_ver as the commit marker: removed first, written last, so a power cut mid-write leaves the unit honestly
+  // uncalibrated instead of half-calibrated. Applies live through Config::applyPhCalibration on success.
+  bool storePhCalibration(const ph::Calibration &points);
+
+  // Erases the stored pH calibration (ph_ver first, for the same commit-marker reason) and applies the zeroed
+  // calibration live, so the unit reports pH uncalibrated at once. False only when NVS could not be opened.
+  bool clearPhCalibration();
 
   // A clear-water capture (D-01): 20 samples, one burst per second, starting at the request, judged by
   // turbidity::cal::evaluateCapture and stored through storeTurbidityClearWaterMv only when accepted. It is

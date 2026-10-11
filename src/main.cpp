@@ -14,9 +14,12 @@
 // Serialized into every signed body, so a bump here invalidates every golden signature at once: it only ever
 // moves together with regenerated vectors (backend `npm run generate:signing-vectors`, then
 // `node scripts/sync-golden-vectors.mjs`). 0.4.0 is the first version that can report turbidity; 0.5.0 also
-// reports wifiSsid; 0.6.0 also reports diag and per-sensor status. That is how Device.firmwareVersion tells
-// the backend which units can.
-static const char *FIRMWARE_VERSION = "0.6.1";
+// reports wifiSsid; 0.6.0 also reports diag and per-sensor status; 0.6.1 windows turbidity across the interval;
+// 0.7.0 also reports ph and sensors.ph (Phase 10). That is how Device.firmwareVersion tells the backend which
+// units can. Per D-01 the bump and the vectors land together: the 0.7.0 pH vectors were already signed in Phase 9
+// and test_wireformat keeps its own version constants, so this change proves sync with
+// `node scripts/sync-golden-vectors.mjs --check` (regenerate from the backend only on drift, never hand-edit).
+static const char *FIRMWARE_VERSION = "0.7.0";
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 static const unsigned long NTP_RETRY_INTERVAL_MS = 1000;
 static const unsigned long NTP_WAIT_LOG_INTERVAL_MS = 10000;
@@ -308,6 +311,7 @@ void setup()
       sensors::readTurbidityMillivolts,
       lastTurbidityNtu,
       sensors::setTurbidityCalibration,
+      sensors::setPhCalibration,
   });
 
   // After provisioning::begin(), never before it: Provisioning owns the "unit" NVS namespace and only reads
@@ -317,6 +321,12 @@ void setup()
   // either. Moving this line above provisioning::begin() would
   // compile, run and log nothing, and every unit in the field would silently report no turbidity at all.
   sensors::setTurbidityCalibration(provisioning::turbidityClearWaterMv());
+
+  // The pH calibration crosses the same way and for the same reason: after provisioning::begin(), never before
+  // it, or Sensors keeps its zeroed calibration and every unit silently reports pH uncalibrated.
+  const ph::Calibration phCal = provisioning::phCalibration();
+  sensors::setPhCalibration(phCal.mvA, phCal.bufA, phCal.mvB, phCal.bufB, phCal.tcalCentiC, phCal.calAt,
+                            phCal.version);
 
 #if TURBIDITY_BENCH
   Serial.printf("[bench] %s build, commands: cal show | cal capture (20 s median) | cal set <mV>\n", BENCH_MARKER);
@@ -338,6 +348,8 @@ void loop()
   // report comes, right after provisioning and NTP sync, or that report falls back to 3 back-to-back bursts
   // sharing one supply level. Pumping it while unprovisioned costs one ~64 ms burst every ~6 s.
   sensors::pollTurbidity(millis(), REPORT_INTERVAL_MS);
+  // Same reason for pH (D-15): its window must be warm before the first report, not 3 back-to-back bursts.
+  sensors::pollPh(millis(), REPORT_INTERVAL_MS);
 
   provisioning::loop(WiFi.status() == WL_CONNECTED);
 

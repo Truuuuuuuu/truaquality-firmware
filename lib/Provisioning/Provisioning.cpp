@@ -1,6 +1,8 @@
 #include "Provisioning.h"
 
 #include "CalibrationPage.h"
+#include "PhCalibration.h"
+#include "PhMath.h"
 #include "TurbidityCalibration.h"
 #include "TurbidityMath.h"
 
@@ -45,6 +47,9 @@ namespace
   uint16_t turbidityClearMv = 0;
   // When turbidityClearMv was stored, Unix seconds; 0 = date unknown (D-08). Kept beside the value it dates.
   uint32_t turbidityCalAt = 0;
+
+  // The unit's pH calibration, cached from NVS for the run. Zeroed = version 0 = uncalibrated (SENS-09).
+  ph::Calibration phCal{};
 
   char apName[24] = {0};
   char macInfoHtml[64] = {0};
@@ -158,6 +163,32 @@ namespace
     // back as 0 = "date unknown" - exactly what such a unit should show.
     turbidityCalAt = prefs.getUInt("turb_cal_at", 0);
     prefs.end();
+  }
+
+  // D-17 layout, every key under NVS's 15-character cap. Everything defaults to 0, so a never-calibrated unit, or
+  // one whose last store was cut before ph_ver (the commit marker) was written, reads back version 0 and
+  // ph::isValidCalibration refuses it: honestly uncalibrated, never half-calibrated. No validation here — PhMath
+  // re-validates on every use, because flash is not this build's output.
+  void loadPhCalibration()
+  {
+    prefs.begin("unit", true);
+    phCal.version = prefs.getUChar("ph_ver", 0);
+    phCal.mvA = prefs.getUShort("ph_mv_a", 0);
+    phCal.bufA = prefs.getUShort("ph_buf_a", 0);
+    phCal.mvB = prefs.getUShort("ph_mv_b", 0);
+    phCal.bufB = prefs.getUShort("ph_buf_b", 0);
+    phCal.tcalCentiC = prefs.getShort("ph_tcal", 0);
+    phCal.calAt = prefs.getUInt("ph_cal_at", 0);
+    prefs.end();
+  }
+
+  void applyPhCalibrationLive()
+  {
+    if (config.applyPhCalibration != nullptr)
+    {
+      config.applyPhCalibration(phCal.mvA, phCal.bufA, phCal.mvB, phCal.bufB, phCal.tcalCentiC, phCal.calAt,
+                                phCal.version);
+    }
   }
 
   // Fires when the "Setup" page is saved. Runs the same validation the portal's HTML `pattern` attributes
@@ -609,6 +640,14 @@ namespace provisioning
                     static_cast<unsigned>(turbidityClearMv));
     }
 
+    loadPhCalibration();
+    // SENS-09: one line, only when unusable, for the same reason as turbidity's — on the dashboard an
+    // uncalibrated pH and a dead pH board both show no value, and the boot log is where an admin tells them apart.
+    if (!ph::isValidCalibration(phCal))
+    {
+      Serial.println("[provisioning] pH uncalibrated: no valid buffer calibration stored");
+    }
+
     uint8_t mac[6];
     WiFi.macAddress(mac);
     snprintf(apName, sizeof(apName), "TruAquality-%02X%02X", mac[4], mac[5]);
@@ -723,6 +762,97 @@ namespace provisioning
     {
       config.applyTurbidityCalibration(clearWaterMv);
     }
+    return true;
+  }
+
+  ph::Calibration phCalibration()
+  {
+    return phCal;
+  }
+
+  bool storePhCalibration(const ph::Calibration &points)
+  {
+    ph::Calibration next = points;
+    next.version = ph::PH_CAL_VERSION;
+    next.calAt = turbidity::cal::calibrationStamp(static_cast<long long>(time(nullptr)));
+
+    // Validated before any write: this is the only door into the keys, so a swapped buffer pair or a misread
+    // capture is refused here rather than persisted. The loader's re-validation covers flash from older builds.
+    const ph::cal::CalCheck check = ph::cal::checkCalibration(next);
+    if (check != ph::cal::CalCheck::Ok)
+    {
+      Serial.printf("[provisioning] pH calibration NOT saved: %s\n", ph::cal::calCheckToken(check));
+      return false;
+    }
+
+    if (!prefs.begin("unit", false))
+    {
+      Serial.println("[provisioning] pH calibration NOT saved: could not open NVS");
+      return false;
+    }
+
+    // NVS only guarantees that each single key/value pair survives a power cut, not a group of them. ph_ver is
+    // therefore the commit marker: removed FIRST, so the old version cannot vouch for a half-new set of points,
+    // and written LAST, only after every other key landed. Any failure in between returns with ph_ver absent,
+    // which the loader reads as version 0 = uncalibrated — the honest state for a calibration that did not finish.
+    // remove() returning false just means the key was not there (first calibration), which is fine.
+    prefs.remove("ph_ver");
+    // The RAM copy goes uncalibrated at the same moment, so this run never reports from points that are no
+    // longer what flash says.
+    phCal = ph::Calibration{};
+    applyPhCalibrationLive();
+
+    const bool pointsWritten = prefs.putUShort("ph_mv_a", next.mvA) == sizeof(uint16_t) &&
+                               prefs.putUShort("ph_buf_a", next.bufA) == sizeof(uint16_t) &&
+                               prefs.putUShort("ph_mv_b", next.mvB) == sizeof(uint16_t) &&
+                               prefs.putUShort("ph_buf_b", next.bufB) == sizeof(uint16_t) &&
+                               prefs.putShort("ph_tcal", next.tcalCentiC) == sizeof(int16_t) &&
+                               prefs.putUInt("ph_cal_at", next.calAt) == sizeof(uint32_t);
+    if (!pointsWritten)
+    {
+      prefs.end();
+      Serial.println("[provisioning] pH calibration NOT saved: NVS write failed (unit left uncalibrated)");
+      return false;
+    }
+    if (prefs.putUChar("ph_ver", next.version) != sizeof(uint8_t))
+    {
+      prefs.end();
+      Serial.println("[provisioning] pH calibration NOT saved: NVS commit marker write failed (unit left uncalibrated)");
+      return false;
+    }
+    prefs.end();
+
+    phCal = next;
+    Serial.println("[provisioning] pH calibration saved");
+    if (next.calAt == 0)
+    {
+      Serial.println("[provisioning] pH calibration date unknown: clock not set");
+    }
+    // Applied inside the door, so no caller can store a calibration and forget to make it live.
+    applyPhCalibrationLive();
+    return true;
+  }
+
+  bool clearPhCalibration()
+  {
+    if (!prefs.begin("unit", false))
+    {
+      Serial.println("[provisioning] pH calibration NOT cleared: could not open NVS");
+      return false;
+    }
+    // Commit marker first: once ph_ver is gone the unit is uncalibrated even if a cut stops the rest.
+    prefs.remove("ph_ver");
+    prefs.remove("ph_mv_a");
+    prefs.remove("ph_buf_a");
+    prefs.remove("ph_mv_b");
+    prefs.remove("ph_buf_b");
+    prefs.remove("ph_tcal");
+    prefs.remove("ph_cal_at");
+    prefs.end();
+
+    phCal = ph::Calibration{};
+    Serial.println("[provisioning] pH calibration cleared");
+    applyPhCalibrationLive();
     return true;
   }
 
