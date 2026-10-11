@@ -124,10 +124,10 @@ void test_burst_shorter_than_the_trim_is_nan_not_an_average(void)
 
 void test_divider_ratio_includes_the_pull_down_in_parallel(void)
 {
-  const float bottom = (10000.0f * 1000000.0f) / (10000.0f + 1000000.0f);
+  const float bottom = (12000.0f * 1000000.0f) / (12000.0f + 1000000.0f);
   TEST_ASSERT_FLOAT_WITHIN(1e-5f, bottom / (10000.0f + bottom), ph::DIVIDER_RATIO);
-  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.4975f, ph::DIVIDER_RATIO);
-  TEST_ASSERT_FLOAT_WITHIN(0.5f, 1000.0f, ph::sensorMvFromPinMv(497.5f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.5425f, ph::DIVIDER_RATIO);
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 1000.0f, ph::sensorMvFromPinMv(542.5f));
 }
 
 // ---- Fit ----

@@ -52,8 +52,7 @@ the firmware's.
 
 **pH is the current milestone (Phase 10, firmware 0.7.0).** An analog pH board (silkscreen `pH meter V1.1`,
 SEN0161 family) with a glass probe is read on **GPIO35** (ADC1_CH7, input-only, no internal pulls) through the
-a **10 kΩ / 10 kΩ divider** (not turbidity's 10k/12k — the bench had no 12 kΩ; worst case ≈2.27 V at the pin)
-plus a **1 MΩ pull-down** on the pin side, so an unplugged input is pulled down
+same **10 kΩ / 12 kΩ divider** plus a **1 MΩ pull-down** on the pin side, so an unplugged input is pulled down
 instead of floating. The firmware fits a two-point line from two buffers (6.86 + 9.18 on the bench) and uses
 each buffer's real pH at the DS18B20 temperature measured in that cup. It compensates only the electrode slope,
 using the DS18B20 temperature, and falls back to the calibration temperature (Tcal) when the probe faults: the
