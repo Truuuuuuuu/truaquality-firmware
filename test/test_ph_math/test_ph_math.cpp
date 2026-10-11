@@ -431,6 +431,7 @@ void test_buffer_table_exact_rows(void)
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.14f, ph::cal::bufferPhAt(918, 30.0f));
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.02f, ph::cal::bufferPhAt(401, 35.0f));
   TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.01f, ph::cal::bufferPhAt(401, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.01f, ph::cal::bufferPhAt(401, 30.0f));
 }
 
 void test_buffer_table_interpolates_between_rows(void)

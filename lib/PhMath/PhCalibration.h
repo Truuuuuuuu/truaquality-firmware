@@ -27,9 +27,11 @@ namespace ph
     // The real pH of each buffer, in hundredths, at 20 / 25 / 30 / 35 C. Sources (MEDIUM confidence, from search
     // snippets): NIST SRM 185h for the 0.05 m phthalate (4.001 / 4.005 / 4.012 / 4.021), the standard phosphate
     // (0.025 m: 6.878 / 6.863 / 6.851 / 6.842) and borax (0.01 m: 9.227 / 9.183 / 9.143 / 9.107) tables, with the
-    // 30 C row matching Cole-Parmer's NIST table; 25 C is anchored to the printed nominal. If the sachet prints its
-    // own table, the table recorded in 10-BENCH-RECORD.md wins and replaces these rows (D-11). 4.01 is included
-    // even though the bench calibrates on 6.86 / 9.18, because Phase 11's buffer picker must offer it (D-05).
+    // 6.86 and 9.18 rows at 30 C matching Cole-Parmer's NIST table; 25 C is anchored to the printed nominal. The 4.01
+    // row is 401 at 30 C because NIST 4.012 rounds to 4.01 and the ETI technical 4.01 table also gives 4.01 there (an
+    // earlier 402 came from Cole-Parmer's 4.02; corrected 2026-10-12, Phase 11 D-26). If the sachet prints its own
+    // table, the table recorded in 10-BENCH-RECORD.md wins and replaces these rows (D-11). 4.01 is included even
+    // though the bench calibrates on 6.86 / 9.18, because Phase 11's buffer picker must offer it (D-05).
     constexpr size_t BUFFER_TABLE_TEMPS = 4;
     constexpr float BUFFER_TABLE_C[BUFFER_TABLE_TEMPS] = {20.0f, 25.0f, 30.0f, 35.0f};
 
@@ -41,7 +43,7 @@ namespace ph
 
     constexpr size_t BUFFER_COUNT = 3;
     constexpr BufferRow BUFFER_TABLE[BUFFER_COUNT] = {
-        {401, {400, 401, 402, 402}},
+        {401, {400, 401, 401, 402}},
         {686, {688, 686, 685, 684}},
         {918, {923, 918, 914, 911}},
     };
