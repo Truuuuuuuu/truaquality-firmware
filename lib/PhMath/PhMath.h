@@ -85,7 +85,7 @@ namespace ph
 
   // Calibration validity. A never-written NVS reads back zeros (version 0), which fails here -> uncalibrated.
   constexpr uint8_t PH_CAL_VERSION = 1;
-  // 1.00 pH: keeps the fit away from a divide-by-near-zero. Phase 11's refusal windows tighten this.
+  // 1.00 pH: keeps the fit away from a divide-by-near-zero. Storage validity only: the portal's ~2 pH acceptance rule is ph::accept::PORTAL_MIN_BUFFER_GAP_HUNDREDTHS in PhAcceptance.h, and this stays 100 so a stored bench calibration is never silently invalidated (Phase 11 D-09).
   constexpr uint16_t MIN_BUFFER_GAP_HUNDREDTHS = 100;
   // Above the sensor's ~4.6 V supply; a stored point beyond it is corrupt.
   constexpr uint16_t MAX_SENSOR_MV = 5000;

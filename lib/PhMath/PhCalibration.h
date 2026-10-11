@@ -30,8 +30,13 @@ namespace ph
     // 6.86 and 9.18 rows at 30 C matching Cole-Parmer's NIST table; 25 C is anchored to the printed nominal. The 4.01
     // row is 401 at 30 C because NIST 4.012 rounds to 4.01 and the ETI technical 4.01 table also gives 4.01 there (an
     // earlier 402 came from Cole-Parmer's 4.02; corrected 2026-10-12, Phase 11 D-26). If the sachet prints its own
-    // table, the table recorded in 10-BENCH-RECORD.md wins and replaces these rows (D-11). 4.01 is included even
-    // though the bench calibrates on 6.86 / 9.18, because Phase 11's buffer picker must offer it (D-05).
+    // table, the table recorded in 10-BENCH-RECORD.md wins and replaces these rows (D-11). The 7.00 and 10.01 rows
+    // come from the ETI 8000/8100 pH meter manual's buffer table (its 4.01 / 7.00 / 10.01 technical set,
+    // https://www.tester.co.uk/files/get/download/id/3825/eti-8100-plus-ph-meter-user-manual.pdf), which agrees
+    // with Hamilton DuraCal snippets: MEDIUM confidence. The 4.00 row is the NIST 0.05 m phthalate curve shape
+    // shifted to 4.00 at 25 C: LOW confidence, assumed, off by at most 0.02 pH, and there is no 4.00 sachet on hand
+    // to check it against. A sachet-printed table recorded in 10-BENCH-RECORD.md still wins (Phase 10 D-11). The
+    // six rows are exactly the Phase 11 portal picker (11-CONTEXT D-10), in ascending nominal order.
     constexpr size_t BUFFER_TABLE_TEMPS = 4;
     constexpr float BUFFER_TABLE_C[BUFFER_TABLE_TEMPS] = {20.0f, 25.0f, 30.0f, 35.0f};
 
@@ -41,11 +46,14 @@ namespace ph
       uint16_t phHundredths[BUFFER_TABLE_TEMPS];
     };
 
-    constexpr size_t BUFFER_COUNT = 3;
+    constexpr size_t BUFFER_COUNT = 6;
     constexpr BufferRow BUFFER_TABLE[BUFFER_COUNT] = {
+        {400, {400, 400, 401, 402}},
         {401, {400, 401, 401, 402}},
         {686, {688, 686, 685, 684}},
+        {700, {702, 700, 699, 698}},
         {918, {923, 918, 914, 911}},
+        {1001, {1006, 1001, 997, 993}},
     };
 
     // The pH the buffer really has at `tempC`, interpolated linearly between rows. NAN for a NAN temperature, a
@@ -80,8 +88,8 @@ namespace ph
       return NAN;
     }
 
-    // Why a calibration was refused, for the bench console to print. Only the D-18 basic checks; the full CAL-09
-    // refusal windows (slope % and offset limits) are Phase 11's.
+    // Why a calibration was refused, for the bench console to print. Only the D-18 basic checks; the portal's
+    // CAL-09 refusal windows (slope % and offset limits) live in PhAcceptance.h (ph::accept).
     enum class CalCheck : uint8_t
     {
       Ok,
