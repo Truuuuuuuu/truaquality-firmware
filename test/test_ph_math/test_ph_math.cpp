@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "PhMath.h"
+#include "PhCalibration.h"
 
 // Pins every pH decision in lib/PhMath on the host: the two-point fit, the slope-only Nernst compensation that
 // pivots on pH 7, the fault order (no signal, uncalibrated, over range), the shared instability backstop, the
@@ -421,6 +422,105 @@ void test_window_warm_up_and_empty_window(void)
   TEST_ASSERT_EQUAL(0, ph::topUpNeeded(w));
 }
 
+// ---- Calibration helpers (PhCalibration.h) ----
+
+void test_buffer_table_exact_rows(void)
+{
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.86f, ph::cal::bufferPhAt(686, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.23f, ph::cal::bufferPhAt(918, 20.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.14f, ph::cal::bufferPhAt(918, 30.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.02f, ph::cal::bufferPhAt(401, 35.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.01f, ph::cal::bufferPhAt(401, 25.0f));
+}
+
+void test_buffer_table_interpolates_between_rows(void)
+{
+  // D-11: 9.18 at 27.5 C sits halfway between 9.18 (25 C) and 9.14 (30 C).
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 9.16f, ph::cal::bufferPhAt(918, 27.5f));
+}
+
+void test_buffer_table_refuses_outside_range_or_unknown_buffer(void)
+{
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(918, 19.9f)));
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(918, 35.1f)));
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(918, NAN)));
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::bufferPhAt(700, 25.0f)));
+}
+
+void test_check_calibration_reports_the_reason(void)
+{
+  using ph::cal::CalCheck;
+  TEST_ASSERT_TRUE(ph::cal::checkCalibration(goodCal()) == CalCheck::Ok);
+  TEST_ASSERT_TRUE(ph::cal::checkCalibration(calFromLine(FIXTURE_MV7, -expectedSlope())) == CalCheck::WrongSign);
+  const uint16_t closeB = static_cast<uint16_t>(686 + ph::MIN_BUFFER_GAP_HUNDREDTHS - 1);
+  TEST_ASSERT_TRUE(ph::cal::checkCalibration(calFromLine(FIXTURE_MV7, expectedSlope(), 686, closeB)) ==
+                   CalCheck::BuffersTooClose);
+  const ph::Calibration zero{};
+  TEST_ASSERT_TRUE(ph::cal::checkCalibration(zero) == CalCheck::Invalid);
+  ph::Calibration hot = goodCal();
+  hot.tcalCentiC = static_cast<int16_t>(ph::MAX_TCAL_CENTI_C + 1);
+  TEST_ASSERT_TRUE(ph::cal::checkCalibration(hot) == CalCheck::Invalid);
+  ph::Calibration equalMv = goodCal();
+  equalMv.mvB = equalMv.mvA;
+  TEST_ASSERT_TRUE(ph::cal::checkCalibration(equalMv) == CalCheck::Invalid);
+}
+
+void test_slope_percent_of_nominal_scales_with_tcal(void)
+{
+  const float nominal = ph::cal::NOMINAL_SENSOR_SLOPE_MV_PER_PH;
+  TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, ph::cal::slopePercentOfNominal(ph::Line{nominal, 1780.0f, 25.0f}));
+  TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, ph::cal::slopePercentOfNominal(ph::Line{-nominal, 1780.0f, 25.0f}));
+  const float hot = nominal * (308.15f / 298.15f);
+  TEST_ASSERT_FLOAT_WITHIN(0.1f, 100.0f, ph::cal::slopePercentOfNominal(ph::Line{hot, 1780.0f, 35.0f}));
+  TEST_ASSERT_FLOAT_WITHIN(0.1f, 90.0f, ph::cal::slopePercentOfNominal(ph::Line{0.9f * nominal, 1780.0f, 25.0f}));
+}
+
+void test_offset_ph_is_zero_at_isopotential_and_scaled_otherwise(void)
+{
+  const ph::Line l{285.7f, 1780.0f, 25.0f};
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, ph::cal::offsetPh(l, 1780.0f));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, (1850.0f - 1780.0f) / 285.7f, ph::cal::offsetPh(l, 1850.0f));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, (1700.0f - 1780.0f) / 285.7f, ph::cal::offsetPh(l, 1700.0f));
+}
+
+void test_cal_median_and_spread_over_a_capture_window(void)
+{
+  float odd[ph::cal::CAPTURE_WINDOW_SAMPLES - 1];
+  for (size_t i = 0; i < ph::cal::CAPTURE_WINDOW_SAMPLES - 1; i++)
+  {
+    odd[i] = static_cast<float>(1000 + ((i * 7) % 19));
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1009.0f, ph::cal::medianOf(odd, ph::cal::CAPTURE_WINDOW_SAMPLES - 1));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 18.0f, ph::cal::spreadOf(odd, ph::cal::CAPTURE_WINDOW_SAMPLES - 1));
+  // Not reordered in place.
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 1007.0f, odd[1]);
+
+  float even[ph::cal::CAPTURE_WINDOW_SAMPLES];
+  for (size_t i = 0; i < ph::cal::CAPTURE_WINDOW_SAMPLES; i++)
+  {
+    even[i] = static_cast<float>(2000 + i);
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 2009.5f, ph::cal::medianOf(even, ph::cal::CAPTURE_WINDOW_SAMPLES));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 19.0f, ph::cal::spreadOf(even, ph::cal::CAPTURE_WINDOW_SAMPLES));
+
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::medianOf(even, 0)));
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::medianOf(even, ph::cal::CAPTURE_WINDOW_SAMPLES + 1)));
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::spreadOf(nullptr, 3)));
+  even[4] = NAN;
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::medianOf(even, ph::cal::CAPTURE_WINDOW_SAMPLES)));
+  TEST_ASSERT_TRUE(std::isnan(ph::cal::spreadOf(even, ph::cal::CAPTURE_WINDOW_SAMPLES)));
+}
+
+void test_cal_check_tokens_cover_every_enumerator(void)
+{
+  using ph::cal::CalCheck;
+  TEST_ASSERT_EQUAL_STRING("ok", ph::cal::calCheckToken(CalCheck::Ok));
+  TEST_ASSERT_EQUAL_STRING("wrong_sign", ph::cal::calCheckToken(CalCheck::WrongSign));
+  TEST_ASSERT_EQUAL_STRING("buffers_too_close", ph::cal::calCheckToken(CalCheck::BuffersTooClose));
+  TEST_ASSERT_EQUAL_STRING("invalid", ph::cal::calCheckToken(CalCheck::Invalid));
+  TEST_ASSERT_EQUAL_STRING("invalid", ph::cal::calCheckToken(static_cast<CalCheck>(99)));
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -451,5 +551,13 @@ int main(int argc, char **argv)
   RUN_TEST(test_majority_unstable_window_reports_no_value);
   RUN_TEST(test_window_three_of_five_good_reports_the_median_good_burst);
   RUN_TEST(test_window_warm_up_and_empty_window);
+  RUN_TEST(test_buffer_table_exact_rows);
+  RUN_TEST(test_buffer_table_interpolates_between_rows);
+  RUN_TEST(test_buffer_table_refuses_outside_range_or_unknown_buffer);
+  RUN_TEST(test_check_calibration_reports_the_reason);
+  RUN_TEST(test_slope_percent_of_nominal_scales_with_tcal);
+  RUN_TEST(test_offset_ph_is_zero_at_isopotential_and_scaled_otherwise);
+  RUN_TEST(test_cal_median_and_spread_over_a_capture_window);
+  RUN_TEST(test_cal_check_tokens_cover_every_enumerator);
   return UNITY_END();
 }
