@@ -59,6 +59,15 @@ namespace
   // power-on reset until a conversion completes; firmware before 0.6.0 published it as a real 85 C reading.
   constexpr float POWER_ON_RESET_C = 85.0f;
 
+  // The portal's non-blocking poll (pollTemperatureCelsius). A cached value older than a few 1 Hz sampler ticks
+  // means the probe stopped answering, so it is reported as no temperature rather than shown as live.
+  constexpr unsigned long TEMPERATURE_CACHE_MAX_AGE_MS = 5000;
+  bool tempConversionPending = false;
+  unsigned long tempConversionStartMs = 0;
+  float cachedTempC = NAN;
+  unsigned long cachedTempMs = 0;
+  bool cachedTempValid = false;
+
   struct TemperatureRead
   {
     float celsius;
@@ -392,6 +401,46 @@ namespace sensors
   {
     const TemperatureRead temperature = readTemperature();
     return temperature.status == TemperatureStatus::Ok ? temperature.celsius : NAN;
+  }
+
+  float pollTemperatureCelsius(unsigned long nowMs)
+  {
+    // Unsigned subtraction, so a millis() wrap is harmless (same as pollPh). If a blocking readAll() ran between
+    // the request and this read, its own conversion is what the scratchpad holds, which is just as fresh (A7).
+    if (tempConversionPending && nowMs - tempConversionStartMs >= ds18b20.millisToWaitForConversion())
+    {
+      const float celsius = ds18b20.getTempCByIndex(0);
+      const bool fault = celsius == DISCONNECTED_C || celsius == DEVICE_DISCONNECTED_C || celsius == POWER_ON_RESET_C;
+      cachedTempC = fault ? NAN : celsius;
+      cachedTempMs = nowMs;
+      cachedTempValid = true;
+      tempConversionPending = false;
+    }
+    if (!tempConversionPending)
+    {
+      // Re-scan as readTemperature() does, so a replugged probe recovers without a reboot.
+      ds18b20.begin();
+      if (ds18b20.getDeviceCount() == 0)
+      {
+        cachedTempC = NAN;
+        cachedTempMs = nowMs;
+        cachedTempValid = true;
+      }
+      else
+      {
+        // Restoring true straight away keeps readAll() and readTemperatureCelsius() blocking.
+        ds18b20.setWaitForConversion(false);
+        ds18b20.requestTemperatures();
+        ds18b20.setWaitForConversion(true);
+        tempConversionPending = true;
+        tempConversionStartMs = nowMs;
+      }
+    }
+    if (cachedTempValid && nowMs - cachedTempMs <= TEMPERATURE_CACHE_MAX_AGE_MS)
+    {
+      return cachedTempC;
+    }
+    return NAN;
   }
 
   SensorSample readAll()

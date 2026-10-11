@@ -197,4 +197,10 @@ namespace sensors
   // One blocking DS18B20 read (~750 ms), NAN on any fault. For the bench console's buffer temperature (D-11),
   // which needs the probe reading without running a whole readAll() and disturbing the report windows.
   float readTemperatureCelsius();
+
+  // Non-blocking DS18B20 read for the portal's 1 Hz pH sampler, which needs the buffer-cup temperature every second
+  // (D-12/D-13): the blocking read (~750 ms) would leave the single-client portal web server unresponsive most of
+  // the time. Call it with millis(). Returns the last completed conversion, NAN on a fault or when no conversion
+  // has completed in the last 5 s. Never blocks.
+  float pollTemperatureCelsius(unsigned long nowMs);
 }
