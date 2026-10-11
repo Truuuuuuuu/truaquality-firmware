@@ -400,6 +400,433 @@ void test_verdict_age_slot_tokens_cover_every_enumerator(void)
   TEST_ASSERT_EQUAL_STRING("none", slotToken(static_cast<Slot>(99)));
 }
 
+// ---- Capture engine (plan 11-04) ---------------------------------------------------------------------------------
+
+namespace
+{
+  using ph::accept::CaptureEngine;
+  using ph::accept::CaptureState;
+  using ph::accept::LiveState;
+
+  constexpr size_t WINDOW = ph::cal::CAPTURE_WINDOW_SAMPLES;
+  constexpr float CUP_C = 25.0f;
+
+  // Feeds `count` identical samples with elapsed seconds counting up from `elapsedS`; returns the next second.
+  uint16_t feedFlat(CaptureEngine &e, float mv, float tempC, size_t count, uint16_t elapsedS)
+  {
+    for (size_t i = 0; i < count; i++)
+    {
+      ph::accept::feedCapture(e, mv, tempC, elapsedS);
+      elapsedS++;
+    }
+    return elapsedS;
+  }
+
+  CaptureEngine started(uint16_t nominal = 918)
+  {
+    CaptureEngine e{};
+    ph::accept::startCapture(e, nominal, CUP_C);
+    return e;
+  }
+
+  // Feeds a 20-sample window: first DRIFT_EDGE_SAMPLES at `first`, last DRIFT_EDGE_SAMPLES at `last`, the middle
+  // at `middle`.
+  void feedEdges(CaptureEngine &e, float first, float middle, float last)
+  {
+    uint16_t t = 1;
+    t = feedFlat(e, first, CUP_C, ph::accept::DRIFT_EDGE_SAMPLES, t);
+    t = feedFlat(e, middle, CUP_C, WINDOW - 2 * ph::accept::DRIFT_EDGE_SAMPLES, t);
+    feedFlat(e, last, CUP_C, ph::accept::DRIFT_EDGE_SAMPLES, t);
+  }
+}
+
+void test_drift_uses_chronological_order_on_wrapped_ring(void)
+{
+  using namespace ph::accept;
+  // Ring written up to slot 6, so the oldest sample is slot 7: chronological 0..4 = slots 7..11, 15..19 = slots 2..6.
+  float ring[WINDOW];
+  for (size_t i = 0; i < WINDOW; i++)
+  {
+    ring[i] = 1005.0f;
+  }
+  for (size_t i = 7; i <= 11; i++)
+  {
+    ring[i] = 1000.0f;
+  }
+  for (size_t i = 2; i <= 6; i++)
+  {
+    ring[i] = 1010.0f;
+  }
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 10.0f, driftOf(ring, 7, WINDOW));
+  // Read naively from slot 0 the same ring would claim a negative drift; the chronological unroll must not.
+  TEST_ASSERT_TRUE(driftOf(ring, 7, WINDOW) > 0.0f);
+
+  float flat[WINDOW];
+  for (size_t i = 0; i < WINDOW; i++)
+  {
+    const size_t slot = (7 + i) % WINDOW;
+    flat[i] = ring[slot];
+  }
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 10.0f, driftOf(flat, 0, WINDOW));
+
+  TEST_ASSERT_TRUE(std::isnan(driftOf(ring, 7, WINDOW - 1)));
+  TEST_ASSERT_TRUE(std::isnan(driftOf(nullptr, 0, WINDOW)));
+  ring[2] = NAN;
+  TEST_ASSERT_TRUE(std::isnan(driftOf(ring, 7, WINDOW)));
+}
+
+void test_live_state_settling_steady_signal_lost(void)
+{
+  using namespace ph::accept;
+  float ring[WINDOW];
+  for (size_t i = 0; i < WINDOW; i++)
+  {
+    ring[i] = 1500.0f;
+  }
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveState::Settling), static_cast<int>(liveState(ring, 0, 0)));
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveState::Settling), static_cast<int>(liveState(ring, 10, 10)));
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveState::Steady), static_cast<int>(liveState(ring, 0, WINDOW)));
+
+  float drifting[WINDOW];
+  for (size_t i = 0; i < WINDOW; i++)
+  {
+    drifting[i] = 1500.0f + static_cast<float>(i);
+  }
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveState::Settling), static_cast<int>(liveState(drifting, 0, WINDOW)));
+
+  float jumpy[WINDOW];
+  for (size_t i = 0; i < WINDOW; i++)
+  {
+    jumpy[i] = 1500.0f;
+  }
+  jumpy[10] = 1500.0f + MAX_CAPTURE_SPREAD_SENSOR_MV + 1.0f;
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveState::Settling), static_cast<int>(liveState(jumpy, 0, WINDOW)));
+
+  ring[3] = NAN;
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveState::SignalLost), static_cast<int>(liveState(ring, 5, 5)));
+  TEST_ASSERT_EQUAL(static_cast<int>(LiveState::SignalLost), static_cast<int>(liveState(ring, 0, WINDOW)));
+}
+
+void test_start_refuses_no_temperature(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e{};
+  startCapture(e, 918, NAN);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::NoTemperature), static_cast<int>(e.reason));
+  TEST_ASSERT_FALSE(isCaptureRunning(e));
+}
+
+void test_start_refuses_temperature_out_of_range(void)
+{
+  using namespace ph::accept;
+  const float cold = ph::cal::BUFFER_TABLE_MIN_C - 0.1f;
+  const float hot = ph::cal::BUFFER_TABLE_MAX_C + 0.1f;
+  CaptureEngine e{};
+  startCapture(e, 918, cold);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::TemperatureOutOfRange), static_cast<int>(e.reason));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, cold, e.reasonValue);
+
+  startCapture(e, 918, hot);
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::TemperatureOutOfRange), static_cast<int>(e.reason));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, hot, e.reasonValue);
+
+  // The table edges themselves are inside the range.
+  startCapture(e, 918, ph::cal::BUFFER_TABLE_MIN_C);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Capturing), static_cast<int>(e.state));
+  startCapture(e, 918, ph::cal::BUFFER_TABLE_MAX_C);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Capturing), static_cast<int>(e.state));
+}
+
+void test_start_refuses_unknown_nominal(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e{};
+  startCapture(e, 500, CUP_C);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::Invalid), static_cast<int>(e.reason));
+
+  startCapture(e, 918, CUP_C);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Capturing), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::None), static_cast<int>(e.reason));
+  TEST_ASSERT_EQUAL_UINT16(918, e.nominal);
+  TEST_ASSERT_EQUAL(0, static_cast<int>(e.filled));
+  TEST_ASSERT_EQUAL_UINT16(0, e.elapsedS);
+  TEST_ASSERT_FALSE(e.point.held);
+  TEST_ASSERT_TRUE(isCaptureRunning(e));
+}
+
+void test_feed_nan_mv_is_signal_lost(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  feedFlat(e, 1790.0f, CUP_C, 5, 1);
+  feedCapture(e, NAN, CUP_C, 6);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::SignalLost), static_cast<int>(e.reason));
+}
+
+void test_feed_nan_temperature_is_no_temperature(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  feedFlat(e, 1790.0f, CUP_C, 5, 1);
+  feedCapture(e, 1790.0f, NAN, 6);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::NoTemperature), static_cast<int>(e.reason));
+
+  const float hot = ph::cal::BUFFER_TABLE_MAX_C + 0.5f;
+  e = started();
+  feedFlat(e, 1790.0f, CUP_C, 5, 1);
+  feedCapture(e, 1790.0f, hot, 6);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::TemperatureOutOfRange), static_cast<int>(e.reason));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, hot, e.reasonValue);
+}
+
+void test_steady_window_accepts_with_median_and_buffer_ph(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started(918);
+  const uint16_t t = feedFlat(e, 1790.0f, CUP_C, WINDOW - 1, 1);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Capturing), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(WINDOW - 1), static_cast<int>(e.filled));
+  feedCapture(e, 1790.0f, CUP_C, t);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::None), static_cast<int>(e.reason));
+  TEST_ASSERT_TRUE(e.point.held);
+  TEST_ASSERT_EQUAL_UINT16(918, e.point.nominal);
+  TEST_ASSERT_EQUAL_UINT16(1790, e.point.mv);
+  const long expectBuf = std::lround(ph::cal::bufferPhAt(918, CUP_C) * 100.0f);
+  TEST_ASSERT_EQUAL(expectBuf, static_cast<long>(e.point.bufHundredths));
+  TEST_ASSERT_EQUAL_UINT16(918, e.point.bufHundredths);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, CUP_C, e.point.tempC);
+  TEST_ASSERT_FALSE(isCaptureRunning(e));
+}
+
+void test_point_temperature_is_window_mean(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started(686);
+  const uint16_t t = feedFlat(e, 1740.0f, 24.0f, WINDOW / 2, 1);
+  feedFlat(e, 1740.0f, 26.0f, WINDOW / 2, t);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 25.0f, e.point.tempC);
+  const long expectBuf = std::lround(ph::cal::bufferPhAt(686, 25.0f) * 100.0f);
+  TEST_ASSERT_EQUAL(expectBuf, static_cast<long>(e.point.bufHundredths));
+}
+
+void test_drift_boundary_is_inclusive(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  feedEdges(e, 1000.0f, 1000.0f + MAX_DRIFT_SENSOR_MV / 2.0f, 1000.0f + MAX_DRIFT_SENSOR_MV);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+
+  e = started();
+  feedEdges(e, 1000.0f, 1000.0f + MAX_DRIFT_SENSOR_MV / 2.0f, 1000.0f + MAX_DRIFT_SENSOR_MV + 0.1f);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Settling), static_cast<int>(e.state));
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, MAX_DRIFT_SENSOR_MV + 0.1f, e.lastDriftMv);
+  TEST_ASSERT_TRUE(isCaptureRunning(e));
+
+  // A downward drift is judged on its magnitude.
+  e = started();
+  feedEdges(e, 1000.0f, 1000.0f, 1000.0f - MAX_DRIFT_SENSOR_MV - 0.1f);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Settling), static_cast<int>(e.state));
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, -(MAX_DRIFT_SENSOR_MV + 0.1f), e.lastDriftMv);
+}
+
+void test_spread_boundary_is_inclusive(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  uint16_t t = feedFlat(e, 1000.0f, CUP_C, WINDOW / 2, 1);
+  t = feedFlat(e, 1000.0f + MAX_CAPTURE_SPREAD_SENSOR_MV, CUP_C, 1, t);
+  feedFlat(e, 1000.0f, CUP_C, WINDOW / 2 - 1, t);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL_UINT16(1000, e.point.mv);
+
+  e = started();
+  t = feedFlat(e, 1000.0f, CUP_C, WINDOW / 2, 1);
+  t = feedFlat(e, 1000.0f + MAX_CAPTURE_SPREAD_SENSOR_MV + 0.1f, CUP_C, 1, t);
+  feedFlat(e, 1000.0f, CUP_C, WINDOW / 2 - 1, t);
+  // Too wide, but not refused before the timeout: the engine keeps trying.
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Settling), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::Unstable), static_cast<int>(e.lastNotReady));
+}
+
+void test_elapsed_seconds_come_from_the_caller(void)
+{
+  using namespace ph::accept;
+  // A ramp that never settles, fed every other second: the timeout follows the supplied wall-clock seconds, so it
+  // fires after SETTLE_TIMEOUT_S / 2 + 1 feeds, not after SETTLE_TIMEOUT_S feeds.
+  CaptureEngine e = started();
+  size_t feeds = 0;
+  for (uint16_t t = 0; t < SETTLE_TIMEOUT_S; t = static_cast<uint16_t>(t + 2))
+  {
+    feedCapture(e, 1000.0f + static_cast<float>(feeds), CUP_C, t);
+    feeds++;
+    TEST_ASSERT_EQUAL_UINT16(t, e.elapsedS);
+    TEST_ASSERT_TRUE(isCaptureRunning(e));
+  }
+  feedCapture(e, 1000.0f + static_cast<float>(feeds), CUP_C, SETTLE_TIMEOUT_S);
+  feeds++;
+  TEST_ASSERT_EQUAL_UINT16(SETTLE_TIMEOUT_S, e.elapsedS);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::SettleTimeout), static_cast<int>(e.reason));
+  TEST_ASSERT_EQUAL(static_cast<int>(SETTLE_TIMEOUT_S / 2 + 1), static_cast<int>(feeds));
+}
+
+void test_long_settling_keeps_trying_then_accepts(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  const size_t RAMP = 40;
+  uint16_t t = 1;
+  for (size_t i = 0; i < RAMP; i++)
+  {
+    feedCapture(e, 1100.0f - static_cast<float>(RAMP) + static_cast<float>(i), CUP_C, t);
+    t++;
+    if (i + 1 >= WINDOW)
+    {
+      TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Settling), static_cast<int>(e.state));
+    }
+  }
+  while (e.state == CaptureState::Settling && t < SETTLE_TIMEOUT_S)
+  {
+    feedCapture(e, 1100.0f, CUP_C, t);
+    t++;
+  }
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+  TEST_ASSERT_TRUE(e.elapsedS < SETTLE_TIMEOUT_S);
+  TEST_ASSERT_UINT16_WITHIN(static_cast<uint16_t>(MAX_DRIFT_SENSOR_MV) + 1, 1100, e.point.mv);
+}
+
+void test_settle_timeout_refuses_with_minutes(void)
+{
+  using namespace ph::accept;
+  // 1 mV per second for ever: the drift sits well above MAX_DRIFT_SENSOR_MV while the spread stays inside the
+  // backstop, so drift is the last blocker.
+  CaptureEngine e = started();
+  for (uint16_t t = 1; t < SETTLE_TIMEOUT_S; t++)
+  {
+    feedCapture(e, 1000.0f + static_cast<float>(t), CUP_C, t);
+  }
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Settling), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL_UINT16(SETTLE_TIMEOUT_S - 1, e.elapsedS);
+  feedCapture(e, 1000.0f + static_cast<float>(SETTLE_TIMEOUT_S), CUP_C, SETTLE_TIMEOUT_S);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::SettleTimeout), static_cast<int>(e.reason));
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, SETTLE_TIMEOUT_S / 60.0f, e.reasonValue);
+  TEST_ASSERT_FALSE(e.point.held);
+}
+
+void test_unstable_at_timeout(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  for (uint16_t t = 1; t <= SETTLE_TIMEOUT_S; t++)
+  {
+    const float mv = (t % 2 == 0) ? 1000.0f : 1000.0f + 2.0f * MAX_CAPTURE_SPREAD_SENSOR_MV;
+    feedCapture(e, mv, CUP_C, t);
+  }
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::Unstable), static_cast<int>(e.reason));
+  TEST_ASSERT_TRUE(std::isnan(e.reasonValue));
+}
+
+void test_feed_after_finish_is_ignored(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  const uint16_t t = feedFlat(e, 1790.0f, CUP_C, WINDOW, 1);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+  feedCapture(e, NAN, NAN, t);
+  feedCapture(e, 5.0f, CUP_C, t + 1);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL_UINT16(1790, e.point.mv);
+  TEST_ASSERT_EQUAL_UINT16(t - 1, e.elapsedS);
+
+  e = started();
+  feedCapture(e, NAN, CUP_C, 1);
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::SignalLost), static_cast<int>(e.reason));
+  feedFlat(e, 1790.0f, CUP_C, WINDOW, 2);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::SignalLost), static_cast<int>(e.reason));
+  TEST_ASSERT_EQUAL(0, static_cast<int>(e.filled));
+}
+
+void test_cancel_refuses_cancelled(void)
+{
+  using namespace ph::accept;
+  CaptureEngine idle{};
+  TEST_ASSERT_FALSE(isCaptureRunning(idle));
+  cancelCapture(idle);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Idle), static_cast<int>(idle.state));
+
+  CaptureEngine e = started();
+  feedFlat(e, 1790.0f, CUP_C, 3, 1);
+  TEST_ASSERT_TRUE(isCaptureRunning(e));
+  cancelCapture(e);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::Cancelled), static_cast<int>(e.reason));
+  TEST_ASSERT_FALSE(isCaptureRunning(e));
+
+  // Settling is running too, so it can be cancelled.
+  e = started();
+  feedEdges(e, 1000.0f, 1000.0f, 1000.0f + MAX_DRIFT_SENSOR_MV + 1.0f);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Settling), static_cast<int>(e.state));
+  TEST_ASSERT_TRUE(isCaptureRunning(e));
+  cancelCapture(e);
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::Cancelled), static_cast<int>(e.reason));
+
+  // A finished capture is not overwritten by a late cancel.
+  e = started();
+  feedFlat(e, 1790.0f, CUP_C, WINDOW, 1);
+  cancelCapture(e);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Accepted), static_cast<int>(e.state));
+}
+
+void test_zero_median_is_signal_lost(void)
+{
+  using namespace ph::accept;
+  CaptureEngine e = started();
+  feedFlat(e, 0.0f, CUP_C, WINDOW, 1);
+  TEST_ASSERT_EQUAL(static_cast<int>(CaptureState::Refused), static_cast<int>(e.state));
+  TEST_ASSERT_EQUAL(static_cast<int>(Refusal::SignalLost), static_cast<int>(e.reason));
+  TEST_ASSERT_FALSE(e.point.held);
+}
+
+void test_every_picker_nominal_has_buffer_rows(void)
+{
+  using namespace ph::accept;
+  const float temps[4] = {20.0f, 25.0f, 30.0f, 35.0f};
+  for (size_t i = 0; i < PICKER_NOMINAL_COUNT; i++)
+  {
+    for (size_t j = 0; j < 4; j++)
+    {
+      TEST_ASSERT_FALSE(std::isnan(ph::cal::bufferPhAt(PICKER_NOMINALS[i], temps[j])));
+    }
+  }
+}
+
+void test_capture_tokens_cover_every_enumerator(void)
+{
+  using namespace ph::accept;
+  TEST_ASSERT_EQUAL_STRING("settling", liveStateToken(LiveState::Settling));
+  TEST_ASSERT_EQUAL_STRING("steady", liveStateToken(LiveState::Steady));
+  TEST_ASSERT_EQUAL_STRING("signal_lost", liveStateToken(LiveState::SignalLost));
+  TEST_ASSERT_EQUAL_STRING("signal_lost", liveStateToken(static_cast<LiveState>(99)));
+
+  TEST_ASSERT_EQUAL_STRING("idle", captureStateToken(CaptureState::Idle));
+  TEST_ASSERT_EQUAL_STRING("capturing", captureStateToken(CaptureState::Capturing));
+  TEST_ASSERT_EQUAL_STRING("settling", captureStateToken(CaptureState::Settling));
+  TEST_ASSERT_EQUAL_STRING("accepted", captureStateToken(CaptureState::Accepted));
+  TEST_ASSERT_EQUAL_STRING("refused", captureStateToken(CaptureState::Refused));
+  TEST_ASSERT_EQUAL_STRING("refused", captureStateToken(static_cast<CaptureState>(99)));
+}
+
 int main(int argc, char **argv)
 {
   (void)argc;
@@ -432,5 +859,25 @@ int main(int argc, char **argv)
   RUN_TEST(test_check_save);
   RUN_TEST(test_refusal_tokens_cover_every_enumerator);
   RUN_TEST(test_verdict_age_slot_tokens_cover_every_enumerator);
+  RUN_TEST(test_drift_uses_chronological_order_on_wrapped_ring);
+  RUN_TEST(test_live_state_settling_steady_signal_lost);
+  RUN_TEST(test_start_refuses_no_temperature);
+  RUN_TEST(test_start_refuses_temperature_out_of_range);
+  RUN_TEST(test_start_refuses_unknown_nominal);
+  RUN_TEST(test_feed_nan_mv_is_signal_lost);
+  RUN_TEST(test_feed_nan_temperature_is_no_temperature);
+  RUN_TEST(test_steady_window_accepts_with_median_and_buffer_ph);
+  RUN_TEST(test_point_temperature_is_window_mean);
+  RUN_TEST(test_drift_boundary_is_inclusive);
+  RUN_TEST(test_spread_boundary_is_inclusive);
+  RUN_TEST(test_elapsed_seconds_come_from_the_caller);
+  RUN_TEST(test_long_settling_keeps_trying_then_accepts);
+  RUN_TEST(test_settle_timeout_refuses_with_minutes);
+  RUN_TEST(test_unstable_at_timeout);
+  RUN_TEST(test_feed_after_finish_is_ignored);
+  RUN_TEST(test_cancel_refuses_cancelled);
+  RUN_TEST(test_zero_median_is_signal_lost);
+  RUN_TEST(test_every_picker_nominal_has_buffer_rows);
+  RUN_TEST(test_capture_tokens_cover_every_enumerator);
   return UNITY_END();
 }

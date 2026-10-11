@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -463,6 +464,121 @@ namespace ph
         return "b";
       }
       return "none";
+    }
+
+    // ---- Capture engine (plan 11-04) ----------------------------------------------------------------------------
+    // The portal sampler feeds one (sensor mV, cup temperature) pair a second; everything decided about a capture
+    // lives here so Provisioning.cpp only feeds samples and reads state.
+
+    // D-07: drift is judged as the median of the newest DRIFT_EDGE_SAMPLES minus the median of the oldest ones in
+    // the rolling window. Five a side keeps one stray sample from deciding either edge while leaving a middle gap.
+    constexpr size_t DRIFT_EDGE_SAMPLES = 5;
+    static_assert(2 * DRIFT_EDGE_SAMPLES <= ph::cal::CAPTURE_WINDOW_SAMPLES,
+                  "the two drift edges must not overlap inside the capture window");
+
+    // PROVISIONAL until 10-BENCH-RECORD §7: the largest start-vs-end drift (sensor-side mV over the 20 s window) that
+    // still counts as settled. About 3 x the sd of a median-of-5 difference at the §7 noise floor (~0.8 sigma per
+    // median-of-5); noise-limited on purpose, not the Mettler 0.1 mV / 5 s textbook endpoint this board cannot see.
+    constexpr float MAX_DRIFT_SENSOR_MV = 3.0f;
+
+    // PROVISIONAL until 10-BENCH-RECORD §7: the spread backstop, max minus min of a 20-sample window. About 2 x the
+    // max-min of the steady 20-row windows; catches a jumpy probe whose two edges happen to agree.
+    constexpr float MAX_CAPTURE_SPREAD_SENSOR_MV = 25.0f;
+
+    // PROVISIONAL until 10-BENCH-RECORD §7 (settle run): D-15 keeps trying for about 3 minutes of wall-clock time,
+    // then refuses with the blocker that was last in the way.
+    constexpr uint16_t SETTLE_TIMEOUT_S = 180;
+    static_assert(SETTLE_TIMEOUT_S >= ph::cal::CAPTURE_WINDOW_SAMPLES,
+                  "the timeout must leave time to fill one capture window at 1 Hz");
+
+    // The page's live readout: whether a capture started now would pass (as turbidity's live state).
+    enum class LiveState : uint8_t
+    {
+      Settling,
+      Steady,
+      SignalLost,
+    };
+
+    enum class CaptureState : uint8_t
+    {
+      Idle,
+      Capturing,
+      Settling,
+      Accepted,
+      Refused,
+    };
+
+    // Aggregate, value-initialise with `CaptureEngine e{};`. mvRing / tempRing are rings written at `next`; the
+    // oldest sample sits at ring[next] once the window is full. elapsedS is the caller's wall-clock seconds since
+    // startCapture. reasonValue is the number a refusal is about (degC, minutes), NAN when none applies.
+    struct CaptureEngine
+    {
+      float mvRing[ph::cal::CAPTURE_WINDOW_SAMPLES];
+      float tempRing[ph::cal::CAPTURE_WINDOW_SAMPLES];
+      size_t filled;
+      size_t next;
+      uint16_t elapsedS;
+      uint16_t nominal;
+      CaptureState state;
+      Refusal reason;
+      float reasonValue;
+      float lastDriftMv;
+      Refusal lastNotReady;
+      Point point;
+    };
+
+    inline float driftOf(const float *ring, size_t next, size_t filled)
+    {
+      (void)ring;
+      (void)next;
+      (void)filled;
+      return 0.0f;
+    }
+
+    inline LiveState liveState(const float *ring, size_t next, size_t filled)
+    {
+      (void)ring;
+      (void)next;
+      (void)filled;
+      return LiveState::Steady;
+    }
+
+    inline void startCapture(CaptureEngine &e, uint16_t nominal, float tempC)
+    {
+      (void)e;
+      (void)nominal;
+      (void)tempC;
+    }
+
+    inline void feedCapture(CaptureEngine &e, float sensorMv, float tempC, uint16_t elapsedS)
+    {
+      (void)e;
+      (void)sensorMv;
+      (void)tempC;
+      (void)elapsedS;
+    }
+
+    inline void cancelCapture(CaptureEngine &e)
+    {
+      (void)e;
+    }
+
+    inline bool isCaptureRunning(const CaptureEngine &e)
+    {
+      (void)e;
+      return false;
+    }
+
+    inline const char *liveStateToken(LiveState s)
+    {
+      (void)s;
+      return "";
+    }
+
+    inline const char *captureStateToken(CaptureState s)
+    {
+      (void)s;
+      return "";
     }
   }
 }
