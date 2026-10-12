@@ -818,8 +818,8 @@ namespace
   }
 
   // A fixed key set and nothing else (T-05-21, T-11-17): the hotspot password is shared across every unit, so
-  // this response must never carry the device identity, its secret, the saved SSID or the MAC. Serves cached
-  // values only - no burst and no DS18B20 read inside a handler - so polling it costs nothing.
+  // this response must never carry the device identity, its secret, the saved network name or the hardware
+  // address. Serves cached values only - no burst and no DS18B20 read inside a handler - so polling it costs nothing.
   void handlePhStatus()
   {
     JsonDocument doc;
