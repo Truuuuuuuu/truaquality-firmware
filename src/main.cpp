@@ -754,6 +754,18 @@ static float lastTurbidityNtu()
   return sensors::lastTurbidityDiagnostics().ntu;
 }
 
+// pH of the portal's last burst, read back from Sensors so this file does no pH arithmetic of its own.
+static float lastPhValue()
+{
+  return sensors::lastPhDiagnostics().ph;
+}
+
+// The portal's temperature: the cached non-blocking poll, never a 750 ms DS18B20 conversion inside a portal tick.
+static float pollTemperatureC()
+{
+  return sensors::pollTemperatureCelsius(millis());
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -764,6 +776,9 @@ void setup()
       lastTurbidityNtu,
       sensors::setTurbidityCalibration,
       sensors::setPhCalibration,
+      sensors::readPhMillivolts,
+      lastPhValue,
+      pollTemperatureC,
   });
 
   // After provisioning::begin(), never before it: Provisioning owns the "unit" NVS namespace and only reads

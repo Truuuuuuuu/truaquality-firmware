@@ -39,6 +39,17 @@ namespace provisioning
     // calibration is still persisted and is loaded at the next boot.
     void (*applyPhCalibration)(unsigned short mvA, unsigned short bufA, unsigned short mvB, unsigned short bufB,
                                short tcalCentiC, unsigned long calAt, unsigned char version);
+    // The pH portal sampler's reader, injected for the same reason as the turbidity one. One ~64 ms GPIO35 burst
+    // as sensor-side mV (NAN on no signal); same signature as sensors::readPhMillivolts. May be null, which
+    // disables the pH sampler.
+    float (*readPhSensorMv)(float tempC);
+    // pH of the burst readPhSensorMv() just took, from the calibration currently in effect (NAN when
+    // uncalibrated or no signal). Read back so the portal shows the number the sensor code produced (D-17).
+    // May be null.
+    float (*lastPhValue)();
+    // The cached DS18B20 reading in degC, NAN on a fault or a stale value. Non-blocking, because a 750 ms
+    // conversion inside a portal tick would stall WiFiManager and MQTT (D-12/D-13). May be null.
+    float (*pollTemperatureC)();
   };
 
   // Loads any saved identity and, if the unit isn't fully provisioned yet, opens the setup hotspot. Call once

@@ -1,6 +1,7 @@
 #include "Provisioning.h"
 
 #include "CalibrationPage.h"
+#include "PhAcceptance.h"
 #include "PhCalibration.h"
 #include "PhMath.h"
 #include "TurbidityCalibration.h"
@@ -11,6 +12,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <ctime>
@@ -92,6 +94,31 @@ namespace
   uint16_t captureMedianMv = 0;
   float captureSpreadMv = NAN;
   const char *captureReason = nullptr;
+
+  // pH portal sampler (Phase 11). Its own live ring and 1 Hz clock, separate from turbidity's, because the pH
+  // drift rule is judged on chronological 1 Hz samples of the pH pin. Captured points are held in RAM only, so a
+  // reboot, a closed hotspot or walking away discards them and the stored calibration stays in effect (D-14).
+  float phLiveRing[ph::cal::CAPTURE_WINDOW_SAMPLES] = {0};
+  size_t phLiveFilled = 0;
+  size_t phLiveNext = 0;
+  float phLatestMv = NAN;
+  float phLatestPh = NAN;
+  float phLatestTempC = NAN;
+  unsigned long phLastSampleMs = 0;
+  unsigned long phCaptureStartMs = 0;
+  bool phSamplerPrimed = false;
+  ph::accept::CaptureEngine phEngine{};
+  ph::accept::Slot phCaptureSlot = ph::accept::Slot::None;
+  bool phCaptureStartedInPortal = false;
+  ph::accept::HeldPair phHeld{};
+  ph::accept::PairResult phReview{};
+  bool phReviewValid = false;
+
+  // Both captures share the 1 Hz cadence and the admin's attention, so only one runs at a time, pH or turbidity.
+  bool anyCaptureRunning()
+  {
+    return ph::accept::isCaptureRunning(phEngine) || captureState == provisioning::CaptureState::Capturing;
+  }
 
   bool isValidDeviceId(const char *value)
   {
@@ -420,6 +447,133 @@ namespace
     }
   }
 
+  void resetPhLive()
+  {
+    phLiveFilled = 0;
+    phLiveNext = 0;
+    phLatestMv = NAN;
+    phLatestPh = NAN;
+    phLatestTempC = NAN;
+    phSamplerPrimed = false;
+  }
+
+  // One pH burst and one non-blocking temperature poll per second while the setup hotspot is open, nothing
+  // otherwise. Tick-driven, never a wait, so the portal, MQTT keepalive and PUBACKs keep running through a
+  // capture that may take up to SETTLE_TIMEOUT_S.
+  void tickPhSampler()
+  {
+    const bool portalOpen = wm.getConfigPortalActive();
+
+    // As with turbidity: a capture nobody can see the end of is cancelled, never kept.
+    if (ph::accept::isCaptureRunning(phEngine) && phCaptureStartedInPortal && !portalOpen)
+    {
+      ph::accept::cancelCapture(phEngine);
+      Serial.println("[provisioning] pH capture cancelled: setup hotspot closed");
+    }
+
+    if (!portalOpen)
+    {
+      // D-14: held points never outlive the portal session that captured them.
+      phHeld = ph::accept::HeldPair{};
+      phReviewValid = false;
+      resetPhLive();
+      return;
+    }
+
+    if (phSamplerPrimed && millis() - phLastSampleMs < SAMPLER_INTERVAL_MS)
+    {
+      return;
+    }
+    if (config.readPhSensorMv == nullptr)
+    {
+      return;
+    }
+    phSamplerPrimed = true;
+    phLastSampleMs = millis();
+
+    const float t = config.pollTemperatureC != nullptr ? config.pollTemperatureC() : NAN;
+    const float mv = config.readPhSensorMv(t);
+    phLatestPh = config.lastPhValue != nullptr ? config.lastPhValue() : NAN;
+    phLatestMv = mv;
+    phLatestTempC = t;
+
+    phLiveRing[phLiveNext] = mv;
+    phLiveNext = (phLiveNext + 1) % ph::cal::CAPTURE_WINDOW_SAMPLES;
+    if (phLiveFilled < ph::cal::CAPTURE_WINDOW_SAMPLES)
+    {
+      phLiveFilled++;
+    }
+
+    if (!ph::accept::isCaptureRunning(phEngine))
+    {
+      return;
+    }
+    // Wall-clock seconds since the request (unsigned subtraction survives a millis() wrap), so the settle
+    // timeout and its "N min" text are real time even when a tick runs late (D-15).
+    const uint16_t elapsed =
+        static_cast<uint16_t>(std::min<unsigned long>((millis() - phCaptureStartMs) / 1000UL, 65535UL));
+    ph::accept::feedCapture(phEngine, mv, t, elapsed);
+
+    const char *slotTok = ph::accept::slotToken(phCaptureSlot);
+    if (phEngine.state == ph::accept::CaptureState::Accepted)
+    {
+      const ph::accept::PairResult r = ph::accept::acceptIntoSlot(phHeld, phCaptureSlot, phEngine.point);
+      if (r.reason != ph::accept::Refusal::None)
+      {
+        // acceptIntoSlot already dropped the slot captured second; the capture reports the pair's reason.
+        phEngine.state = ph::accept::CaptureState::Refused;
+        phEngine.reason = r.reason;
+        phEngine.reasonValue = r.reasonValue;
+        phReviewValid = false;
+        Serial.printf("[provisioning] pH capture %s refused (%s)\n", slotTok, ph::accept::refusalToken(r.reason));
+        return;
+      }
+      if (r.complete)
+      {
+        phReview = r;
+        phReviewValid = true;
+      }
+      Serial.printf("[provisioning] pH capture %s accepted: nominal %u, %.1f C, buffer pH %.2f, %u mV\n", slotTok,
+                    static_cast<unsigned>(phEngine.point.nominal), phEngine.point.tempC,
+                    phEngine.point.bufHundredths / 100.0, static_cast<unsigned>(phEngine.point.mv));
+    }
+    else if (phEngine.state == ph::accept::CaptureState::Refused)
+    {
+      Serial.printf("[provisioning] pH capture %s refused (%s), value %.1f\n", slotTok,
+                    ph::accept::refusalToken(phEngine.reason), phEngine.reasonValue);
+    }
+  }
+
+  // Starts a pH capture into one slot. Never writes NVS and never sets savedThisSession: a held point only
+  // becomes a calibration through the Save step (11-06).
+  bool startPhCapture(ph::accept::Slot slot, uint16_t nominal)
+  {
+    if (anyCaptureRunning())
+    {
+      return false;
+    }
+    // A re-capture (or a changed picker) replaces that slot, so the old point and any review go first.
+    ph::accept::dropSlot(phHeld, slot);
+    phReviewValid = false;
+    ph::accept::startCapture(phEngine, nominal, config.pollTemperatureC != nullptr ? config.pollTemperatureC() : NAN);
+    phCaptureSlot = slot;
+    phCaptureStartMs = millis();
+    phCaptureStartedInPortal = wm.getConfigPortalActive();
+    // The window starts at the request: the next tick samples at once and restarts the 1 s cadence from there.
+    phSamplerPrimed = false;
+    if (phEngine.state == ph::accept::CaptureState::Refused)
+    {
+      Serial.printf("[provisioning] pH capture %s refused (%s)\n", ph::accept::slotToken(slot),
+                    ph::accept::refusalToken(phEngine.reason));
+    }
+    else
+    {
+      Serial.printf("[provisioning] pH capture %s started (nominal %u)\n", ph::accept::slotToken(slot),
+                    static_cast<unsigned>(nominal));
+    }
+    return true;
+  }
+
   // Every /cal response is live state, so none may be cached: a captive browser that served a stale status or
   // page would show an admin a reading or a "Saved" line that is no longer true.
   void sendJson(int code, JsonDocument &doc)
@@ -566,7 +720,9 @@ namespace
 
     // A running capture would overwrite this value with its own median 20 s later, and the admin would see two
     // different "Saved" lines for one session - so a manual save waits for the capture to finish.
-    if (provisioning::turbidityCaptureStatus().state == provisioning::CaptureState::Capturing)
+    // A running pH capture also answers busy: one capture at a time across both parameters.
+    if (provisioning::turbidityCaptureStatus().state == provisioning::CaptureState::Capturing ||
+        ph::accept::isCaptureRunning(phEngine))
     {
       Serial.println("[provisioning] manual calibration busy");
       doc["result"] = "busy";
@@ -858,7 +1014,8 @@ namespace provisioning
 
   bool startTurbidityCapture()
   {
-    if (captureState == CaptureState::Capturing)
+    // Both captures share the 1 Hz cadence and the admin's attention: one capture at a time, pH or turbidity.
+    if (captureState == CaptureState::Capturing || ph::accept::isCaptureRunning(phEngine))
     {
       return false;
     }
@@ -904,6 +1061,7 @@ namespace provisioning
     handleOutage(wifiConnected);
     handleLed();
     tickSampler();
+    tickPhSampler();
 
     // Invariant: an unprovisioned unit always has its setup hotspot open. WiFiManager can close the portal on
     // its own (its timeout, or breakAfterConfig after either page is saved) without both pieces being present
