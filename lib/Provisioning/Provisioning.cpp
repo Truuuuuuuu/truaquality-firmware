@@ -743,6 +743,174 @@ namespace
     sendJson(200, doc);
   }
 
+  float roundTo(float v, float scale)
+  {
+    return roundf(v * scale) / scale;
+  }
+
+  // NAN never reaches the page as a number: it becomes JSON null, which the page renders as a dash.
+  void putRounded(JsonDocument &doc, const char *key, float v, float scale)
+  {
+    if (isfinite(v))
+    {
+      doc[key] = roundTo(v, scale);
+    }
+    else
+    {
+      doc[key] = nullptr;
+    }
+  }
+
+  void putPhPoint(JsonDocument &doc, const char *key, const ph::accept::Point &p)
+  {
+    if (!p.held)
+    {
+      doc[key] = nullptr;
+      return;
+    }
+    JsonObject o = doc[key].to<JsonObject>();
+    o["nominal"] = static_cast<unsigned>(p.nominal);
+    o["tempC"] = roundTo(p.tempC, 10.0f);
+    o["bufPh"] = p.bufHundredths / 100.0;
+    o["mv"] = static_cast<unsigned>(p.mv);
+  }
+
+  // The stored calibration as the page shows it (D-18/D-19/D-20/D-22): the real buffer pH used, the cup
+  // temperature, slope % of the board nominal (not Nernst), offset in pH, verdict and age. 11-06's save response
+  // reuses this so the "Saved" line and the status line can never disagree.
+  void putPhStored(JsonDocument &doc)
+  {
+    if (!ph::isValidCalibration(phCal))
+    {
+      doc["stored"] = nullptr;
+      return;
+    }
+    const ph::Line line = ph::fit(phCal);
+    const float slopePct = ph::cal::slopePercentOfNominal(line);
+    const float offset = ph::cal::offsetPh(line, ph::accept::BOARD_ZERO_INPUT_SENSOR_MV);
+    const ph::accept::Verdict verdict = ph::accept::healthVerdict(slopePct, offset);
+    const ph::accept::AgeResult age =
+        ph::accept::calibrationAge(phCal.calAt, static_cast<long long>(time(nullptr)));
+    JsonObject o = doc["stored"].to<JsonObject>();
+    o["calAt"] = static_cast<uint32_t>(phCal.calAt);
+    o["bufA"] = phCal.bufA / 100.0;
+    o["bufB"] = phCal.bufB / 100.0;
+    o["tcalC"] = phCal.tcalCentiC / 100.0;
+    if (isfinite(slopePct))
+    {
+      o["slopePct"] = roundTo(slopePct, 10.0f);
+    }
+    else
+    {
+      o["slopePct"] = nullptr;
+    }
+    if (isfinite(offset))
+    {
+      o["offsetPh"] = roundTo(offset, 100.0f);
+    }
+    else
+    {
+      o["offsetPh"] = nullptr;
+    }
+    o["verdict"] = ph::accept::verdictToken(verdict);
+    o["age"] = ph::accept::ageToken(age.age);
+    o["ageDays"] = age.days;
+  }
+
+  // A fixed key set and nothing else (T-05-21, T-11-17): the hotspot password is shared across every unit, so
+  // this response must never carry the device identity, its secret, the saved SSID or the MAC. Serves cached
+  // values only - no burst and no DS18B20 read inside a handler - so polling it costs nothing.
+  void handlePhStatus()
+  {
+    JsonDocument doc;
+    if (isfinite(phLatestMv))
+    {
+      doc["mv"] = lroundf(phLatestMv);
+    }
+    else
+    {
+      doc["mv"] = nullptr;
+    }
+    putRounded(doc, "ph", phLatestPh, 100.0f);
+    doc["calibrated"] = ph::isValidCalibration(phCal);
+    putRounded(doc, "tempC", phLatestTempC, 10.0f);
+    doc["state"] =
+        ph::accept::liveStateToken(ph::accept::liveState(phLiveRing, phLiveNext, phLiveFilled));
+    putRounded(doc, "driftMv", ph::accept::driftOf(phLiveRing, phLiveNext, phLiveFilled), 10.0f);
+    doc["busy"] = anyCaptureRunning();
+
+    const bool idle = phEngine.state == ph::accept::CaptureState::Idle;
+    const bool refused = phEngine.state == ph::accept::CaptureState::Refused;
+    doc["capture"] = ph::accept::captureStateToken(phEngine.state);
+    if (phCaptureSlot == ph::accept::Slot::None)
+    {
+      doc["slot"] = nullptr;
+    }
+    else
+    {
+      doc["slot"] = ph::accept::slotToken(phCaptureSlot);
+    }
+    doc["samples"] = static_cast<unsigned>(phEngine.filled);
+    doc["needed"] = static_cast<unsigned>(ph::cal::CAPTURE_WINDOW_SAMPLES);
+    doc["elapsedS"] = static_cast<unsigned>(phEngine.elapsedS);
+    doc["timeoutS"] = static_cast<unsigned>(ph::accept::SETTLE_TIMEOUT_S);
+    if (refused)
+    {
+      doc["reason"] = ph::accept::refusalToken(phEngine.reason);
+    }
+    else
+    {
+      doc["reason"] = nullptr;
+    }
+    // A value-initialised engine holds 0, not NAN, so the numbers are only meaningful once a capture has run.
+    putRounded(doc, "reasonValue", refused ? phEngine.reasonValue : NAN, 10.0f);
+    putRounded(doc, "lastDriftMv", idle ? NAN : phEngine.lastDriftMv, 10.0f);
+    putPhPoint(doc, "a", phHeld.a);
+    putPhPoint(doc, "b", phHeld.b);
+    if (phReviewValid)
+    {
+      JsonObject r = doc["review"].to<JsonObject>();
+      r["slopePct"] = roundTo(phReview.slopePct, 10.0f);
+      r["offsetPh"] = roundTo(phReview.offsetPh, 100.0f);
+      r["verdict"] = ph::accept::verdictToken(phReview.verdict);
+    }
+    else
+    {
+      doc["review"] = nullptr;
+    }
+    putPhStored(doc);
+    doc["overdueDays"] = static_cast<unsigned>(ph::accept::OVERDUE_AFTER_DAYS);
+    sendJson(200, doc);
+  }
+
+  // T-11-18: lengths are capped before parsing and both values go through exact-string whitelists; the response
+  // is a token, never the raw input.
+  void handlePhCapture()
+  {
+    JsonDocument doc;
+    const String slotArg = wm.server->hasArg("slot") ? wm.server->arg("slot") : String();
+    const String nominalArg = wm.server->hasArg("nominal") ? wm.server->arg("nominal") : String();
+    const ph::accept::Slot slot =
+        slotArg.length() > 1 ? ph::accept::Slot::None : ph::accept::parseSlot(slotArg.c_str());
+    const uint16_t nominal = nominalArg.length() > 4 ? 0 : ph::accept::parseNominal(nominalArg.c_str());
+    if (slot == ph::accept::Slot::None || nominal == 0)
+    {
+      Serial.println("[provisioning] pH capture bad_request");
+      doc["result"] = "bad_request";
+      sendJson(400, doc);
+      return;
+    }
+    if (!startPhCapture(slot, nominal))
+    {
+      Serial.println("[provisioning] pH capture busy");
+      doc["result"] = "busy";
+      sendJson(409, doc);
+      return;
+    }
+    doc["capture"] = ph::accept::captureStateToken(phEngine.state);
+    sendJson(202, doc);
+  }
+
   // Runs on every portal start, because WiFiManager rebuilds its web server each time. It is called before
   // WiFiManager adds its own routes, and the server matches the first registered handler, so the routes added
   // here win over WiFiManager's for the same URI.
@@ -758,11 +926,13 @@ namespace
     wm.server->on("/restart", HTTP_ANY, handleBlocked);
 
     // Changes are POST-only so a captive browser's prefetch or a followed link can never start a capture or
-    // store a value (T-05-18).
+    // store a value (T-05-18). The pH routes follow the same rule (T-11-19).
     wm.server->on("/cal", HTTP_GET, handleCalPage);
     wm.server->on("/cal/status", HTTP_GET, handleCalStatus);
     wm.server->on("/cal/capture", HTTP_POST, handleCalCapture);
     wm.server->on("/cal/set", HTTP_POST, handleCalSet);
+    wm.server->on("/ph/status", HTTP_GET, handlePhStatus);
+    wm.server->on("/ph/capture", HTTP_POST, handlePhCapture);
   }
 }
 
