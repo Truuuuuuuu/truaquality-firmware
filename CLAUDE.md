@@ -59,9 +59,10 @@ using the DS18B20 temperature, and falls back to the calibration temperature (Tc
 reading is then uncompensated, but it is never missing. It reports `ph` with `sensors.ph`. The divider, fault
 floor, instability backstop, slope sign and burst sizes in `lib/PhMath/PhMath.h` are **PROVISIONAL until plan
 10-09** replaces them from the bench CSVs. There is no reference pH meter, so the buffers are the only truth
-points. **Calibration is bench-only until Phase 11:** the serial `ph ...` commands on the bench image (below)
-write the same NVS keys that Phase 11's portal will write. A new unit reports `sensors.ph: "uncalibrated"` with
-no value until it is calibrated.
+points. **Calibration is done on the setup portal's Calibrate pH screen** (Phase 11, see "Field provisioning"
+below): two buffers, 6.86 then 9.18 by default, with 4.01 kept as the spare. The serial `ph ...` commands on
+the bench image (below) remain for characterization only; they write the same NVS keys through the same door.
+A new unit reports `sensors.ph: "uncalibrated"` with no value until it is calibrated.
 
 Adding a parameter means a field on `SensorSample`, a reader in `lib/Sensors/Sensors.cpp`, an `addValue` line
 in `lib/WireFormat/WireFormat.cpp`, and the same id in the backend's `PARAMETER_BOUNDS` and the frontend's
@@ -96,7 +97,8 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
   with `SETUP_AP_PASSWORD`. Joining it from a phone pops up a captive-portal setup page with three screens:
   "Configure WiFi" (network + password, saved by WiFiManager into the ESP32's own WiFi NVS), "Setup"
   (Device ID + Device secret, copied from the Devices page's registration/rotation dialog, saved into this
-  module's own `unit` NVS namespace) and "Calibrate" (turbidity clear-water reference, below). The onboard LED
+  module's own `unit` NVS namespace), "Calibrate turbidity" (clear-water reference, below) and "Calibrate pH"
+  (two-buffer pH calibration, below). The onboard LED
   (GPIO 2) blinks fast the whole time; the unit takes no readings until WiFi and identity are both saved, at
   which point it restarts. Calibration is not required to finish setup.
 - **Provisioned:** the unit joins its saved WiFi and runs exactly as before.
@@ -113,6 +115,34 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
   secret, SSID or MAC); `POST /cal/capture` and `POST /cal/set` are the only mutations (a manual save during a
   running capture answers 409). **Calibrating never restarts the unit and never blocks WiFi/identity setup** —
   an uncalibrated unit simply reports temperature only.
+- **Calibrate pH screen** (`/ph`, the second custom menu button; page in `lib/Provisioning/PhCalibrationPage.h`):
+  shows the live sensor-side mV, the pH from the calibration in effect (or "uncalibrated") and the buffer
+  temperature about once a second, with a settling / steady / signal lost note. Two buffer slots (A and B) each
+  have the six-value picker (4.00, 4.01, 6.86, 7.00, 9.18, 10.01; defaults 6.86 and 9.18). **Capture** runs a
+  rolling 20 s window and accepts it once the drift (median of the first 5 samples against the last 5) is small
+  enough, waiting up to a 3 min settle timeout. A refusal shows its reason, from the tokens `no_temperature`,
+  `temp_out_of_range`, `signal_lost`, `unstable`, `settle_timeout`, `buffers_too_close`, `wrong_sign`,
+  `slope_too_small`, `offset_out_of_window`, `invalid`, `cancelled`, `changed`, `nothing_to_save`, `nvs` and
+  `busy`. Captured points are **held in RAM until Save** and dropped when the hotspot closes, so an abandoned
+  procedure leaves the previous calibration in effect. Review shows the slope as a % of the board's nominal
+  slope (**not** of Nernst), the offset in pH and a good / aging / replace verdict. The current-calibration box
+  shows the real pH used for each buffer at Tcal, the calibration date, and "overdue" after 30 days. Clear has an
+  inline two-step confirm. Routes: `GET /ph/status` (fixed key set, no identity, secret, SSID or MAC); `POST
+  /ph/capture`, `POST /ph/save` and `POST /ph/clear` are the only mutations. **One capture runs at a time across
+  pH and turbidity** (the other answers 409 `busy`). Save sends only the two picked nominals, re-checks them
+  against the held pair (a changed picker answers 409 `changed`) and stores through
+  `provisioning::storePhCalibration`. Like turbidity, **it never restarts the unit**, and a unit with no pH
+  calibration still finishes setup and reports temperature and turbidity. **Field order:** calibrate from a
+  BOOT-hold portal on a provisioned unit, so NTP has set the clock and the date is known; otherwise the box reads
+  "date unknown – recalibrate".
+  - **Known limit (D-25):** `ph::accept::BOARD_ZERO_INPUT_SENSOR_MV` (1740 mV) is **PROVISIONAL and was measured
+    on the bench rig only**. The offset window is that value ± 200 mV, so another unit or pH board needs its own
+    shorted-input measurement, or its buffer pairs may be refused `offset_out_of_window`. Every other PROVISIONAL
+    window in `PhAcceptance.h` (noise floor, drift 3.0 mV, spread 25 mV, settle timeout 180 s, verdict bands) is
+    to be replaced from 10-BENCH-RECORD §7/§13 once plans 10-07..10-12 run (deferred follow-up).
+  - **Known limit (save failure):** a validation refusal on Save keeps the previous calibration, but a failed NVS
+    write in the middle of a save leaves the unit **uncalibrated**, not on its previous calibration, because
+    `storePhCalibration` removes `ph_ver` first (the commit-marker design).
 - **Restart rule:** the unit restarts about 2 s after WiFi or device identity is
   **saved in the current portal session**, never merely because the portal is open. Before the 05-01 fix, a BOOT-hold on an installed
   (provisioned) unit restarted it about 0.5 s after the hotspot opened, with nothing saved, which made
@@ -181,7 +211,8 @@ the PlatformIO IDE extension in VS Code.
 - Prove the bench consoles are absent from the shipping image (after building both environments):
   `strings .pio/build/nodemcu-32s/firmware.elf | grep -c 'ph-bench'` (and `'turbidity-bench'`) must print 0;
   the same greps on `.pio/build/nodemcu-32s-bench/firmware.elf` must be non-zero.
-- Host suites (no board needed): `pio test -e native` (expect **160/160**, measured after plan 11-04). It runs
+- Host suites (no board needed): `pio test -e native` (expect **160/160**, measured after plan 11-07:
+  `test_ph_acceptance` 47, `test_turbidity_math` 51, `test_ph_math` 35, `test_wireformat` 27). It runs
   **four** suites, `test_wireformat`, `test_turbidity_math`, `test_ph_math` and `test_ph_acceptance`, because
   `[env:native]`'s `test_filter` lists all four by name. A native suite missing from that filter is skipped silently, so the run
   looks green while proving nothing about it. To run one suite: `pio test -e native -f test_ph_math`.
@@ -298,7 +329,9 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
     is `Ok`** (`test_non_ok_ph_status_never_sends_a_finite_ph`, 09-REVIEW WR-03). `statusToken(PhStatus)` reuses
     existing backend tokens only. The bench console uses three hooks that leave the report windows alone:
     `readPhMillivolts(tempC)` (one burst, sensor-side mV, not gated on calibration), `lastPhDiagnostics()` and
-    `readTemperatureCelsius()` (one blocking DS18B20 read).
+    `readTemperatureCelsius()` (one blocking DS18B20 read). The portal's 1 Hz pH sampler uses
+    `pollTemperatureCelsius(nowMs)` instead: a non-blocking DS18B20 read (async conversion, cached value read as
+    NAN once older than 5 s), so the portal never stalls for ~750 ms.
   - `Sensors.h` is deliberately Arduino-free (the rule is recorded in the header) so `[env:native]` can
     compile it; `Sensors.cpp` is free to depend on Arduino because it's never built natively.
 - `lib/TurbidityMath/`: header-only and Arduino-free — the burst trim, the divider scaling, the vendor curve,
@@ -322,7 +355,11 @@ absence of `[ERRORED]`, not by the presence of `[PASSED]`.
   gnu++11 while `[env:native]` uses gnu++17, so a C++17 helper builds green on the host and fails on the board.
   They must not include `Sensors.h`, so `ph::Status` is mapped onto `PhStatus` by a switch in `Sensors.cpp`. Like
   TurbidityMath, PhMath must **never** be added to `[env:native]`'s `lib_ignore`. Pinned on the host by
-  `test/test_ph_math/`.
+  `test/test_ph_math/`. The buffer table has six rows (4.00, 4.01, 6.86, 7.00, 9.18, 10.01; the 4.00 row is LOW
+  confidence, the 7.00 and 10.01 rows come from the ETI 8000/8100 manual). `PhAcceptance.h` (`ph::accept::`)
+  holds the portal's acceptance windows, the capture engine (20-sample window, drift, spread backstop, settle
+  timeout), the pair / Save / verdict / calibration-age rules and the refusal tokens; its PROVISIONAL constants
+  live there, not in `PhMath.h`. Pinned by `test/test_ph_acceptance/`.
 - `lib/WireFormat/`: the pure module that owns every byte the backend verifies — the topic string, the
   ISO-8601 timestamp, the JSON body, the signed input (`"<topic>\n<body>"`), lowercase hex, and the
   `v1.<sig>.<body>` framing. It has no `Arduino.h`, no mbedTLS and no MQTT, which is what lets it compile on
