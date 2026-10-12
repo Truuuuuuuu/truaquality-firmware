@@ -1,6 +1,7 @@
 #include "Provisioning.h"
 
 #include "CalibrationPage.h"
+#include "PhCalibrationPage.h"
 #include "PhAcceptance.h"
 #include "PhCalibration.h"
 #include "PhMath.h"
@@ -911,6 +912,85 @@ namespace
     sendJson(202, doc);
   }
 
+  void handlePhPage()
+  {
+    wm.server->sendHeader("Cache-Control", "no-store");
+    wm.server->send(200, "text/html; charset=utf-8", provisioning::phpage::PH_PAGE_HTML);
+  }
+
+  // The client only names the two buffers it is looking at; the points themselves come from the unit's own
+  // captures held in RAM, so no request can forge a calibration (D-01, T-11-24). The posted nominals exist only
+  // to catch a stale review: a picker changed after capturing is refused as "changed", not saved (D-24, T-11-25).
+  // A refusal here, or the door's own validation refusing, leaves the calibration in effect untouched (D-14).
+  // Calibrating never restarts the unit.
+  void handlePhSave()
+  {
+    JsonDocument doc;
+    if (anyCaptureRunning())
+    {
+      doc["result"] = "busy";
+      sendJson(409, doc);
+      return;
+    }
+    const String aArg = wm.server->hasArg("a") ? wm.server->arg("a") : String();
+    const String bArg = wm.server->hasArg("b") ? wm.server->arg("b") : String();
+    const uint16_t pa = aArg.length() > 4 ? 0 : ph::accept::parseNominal(aArg.c_str());
+    const uint16_t pb = bArg.length() > 4 ? 0 : ph::accept::parseNominal(bArg.c_str());
+    if (pa == 0 || pb == 0)
+    {
+      Serial.println("[provisioning] pH save bad_request");
+      doc["result"] = "bad_request";
+      sendJson(400, doc);
+      return;
+    }
+    const ph::accept::PairResult r = ph::accept::checkSave(phHeld, pa, pb);
+    if (r.reason != ph::accept::Refusal::None)
+    {
+      const char *token = ph::accept::refusalToken(r.reason);
+      Serial.printf("[provisioning] pH save refused (%s)\n", token);
+      doc["result"] = token;
+      sendJson(409, doc);
+      return;
+    }
+    // version and calAt are the door's to set.
+    const ph::Calibration points{r.cal.mvA, r.cal.bufA, r.cal.mvB, r.cal.bufB, r.cal.tcalCentiC, 0, 0};
+    if (!provisioning::storePhCalibration(points))
+    {
+      // The held points stay so the admin can retry; the door has already logged why.
+      doc["result"] = "nvs";
+      sendJson(500, doc);
+      return;
+    }
+    phHeld = ph::accept::HeldPair{};
+    phReview = ph::accept::PairResult{};
+    phReviewValid = false;
+    phEngine = ph::accept::CaptureEngine{};
+    phCaptureSlot = ph::accept::Slot::None;
+    doc["result"] = "saved";
+    putPhStored(doc);
+    sendJson(200, doc);
+  }
+
+  // Held points are not a calibration, so clearing leaves them alone; the admin can still save the pair.
+  void handlePhClear()
+  {
+    JsonDocument doc;
+    if (anyCaptureRunning())
+    {
+      doc["result"] = "busy";
+      sendJson(409, doc);
+      return;
+    }
+    if (!provisioning::clearPhCalibration())
+    {
+      doc["result"] = "nvs";
+      sendJson(500, doc);
+      return;
+    }
+    doc["result"] = "cleared";
+    sendJson(200, doc);
+  }
+
   // Runs on every portal start, because WiFiManager rebuilds its web server each time. It is called before
   // WiFiManager adds its own routes, and the server matches the first registered handler, so the routes added
   // here win over WiFiManager's for the same URI.
@@ -931,8 +1011,11 @@ namespace
     wm.server->on("/cal/status", HTTP_GET, handleCalStatus);
     wm.server->on("/cal/capture", HTTP_POST, handleCalCapture);
     wm.server->on("/cal/set", HTTP_POST, handleCalSet);
+    wm.server->on("/ph", HTTP_GET, handlePhPage);
     wm.server->on("/ph/status", HTTP_GET, handlePhStatus);
     wm.server->on("/ph/capture", HTTP_POST, handlePhCapture);
+    wm.server->on("/ph/save", HTTP_POST, handlePhSave);
+    wm.server->on("/ph/clear", HTTP_POST, handlePhClear);
   }
 }
 
