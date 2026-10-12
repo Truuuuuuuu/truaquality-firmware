@@ -1072,10 +1072,10 @@ namespace provisioning
     // joined to the hotspot - trust is the same as the Setup page: whoever holds SETUP_AP_PASSWORD.
     wm.setAPClientCheck(true);
     // An explicit menu instead of the params-page shortcut, which calls setMenu itself and would drop the
-    // "custom" Calibrate button. Listing "param" still keeps the Setup page separate from the WiFi page. There
-    // is deliberately no "update", "erase" or "restart": update is web OTA, and all three are also blocked at
-    // the route level in registerCalibrationRoutes(). Calibrating never sets savedThisSession, so it never
-    // restarts the unit (CAL-07).
+    // "custom" slot holding the two Calibrate buttons (turbidity and pH). Listing "param" still keeps the Setup
+    // page separate from the WiFi page. There is deliberately no "update", "erase" or "restart": update is web
+    // OTA, and all three are also blocked at the route level in registerCalibrationRoutes(). Calibrating either
+    // sensor never sets savedThisSession, so it never restarts the unit (CAL-07).
     std::vector<const char *> menu = {"wifi", "param", "custom", "info", "exit"};
     wm.setMenu(menu);
     wm.setCustomMenuHTML(provisioning::calpage::CAL_MENU_HTML);

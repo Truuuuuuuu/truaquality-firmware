@@ -13,7 +13,10 @@ namespace provisioning
 {
   namespace calpage
   {
-    const char CAL_MENU_HTML[] = "<form action='/cal' method='get'><button>Calibrate</button></form><br/>\n";
+    // WiFiManager has a single custom-menu slot, so both calibration screens share this one string (D-16):
+    // turbidity first, then pH (served from PhCalibrationPage.h).
+    const char CAL_MENU_HTML[] = "<form action='/cal' method='get'><button>Calibrate turbidity</button></form><br/>\n"
+                                 "<form action='/ph' method='get'><button>Calibrate pH</button></form><br/>\n";
 
     const char CAL_PAGE_HTML[] = R"rawliteral(<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
