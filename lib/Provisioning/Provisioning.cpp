@@ -474,8 +474,14 @@ namespace
 
     if (!portalOpen)
     {
-      // D-14: held points never outlive the portal session that captured them.
+      // D-14: held points and terminal capture results never outlive their portal session.
+      // Reset after cancellation above so an active close is still logged before its metadata is discarded.
+      phEngine = ph::accept::CaptureEngine{};
+      phCaptureSlot = ph::accept::Slot::None;
+      phCaptureStartedInPortal = false;
+      phCaptureStartMs = 0;
       phHeld = ph::accept::HeldPair{};
+      phReview = ph::accept::PairResult{};
       phReviewValid = false;
       resetPhLive();
       return;
