@@ -58,6 +58,7 @@ a{color:#1fa3ec}
 <script>
 var E=function(i){return document.getElementById(i)};
 var T=function(i,s){E(i).textContent=s};
+var requestNotice="";
 var NVS="Could not save to the unit's memory. Try again; if it repeats, the unit needs service.";
 var ST={settling:"Settling: collecting readings…",steady:"Steady: Capture will judge the next 20 s",
 unstable:"Unstable: reading moving by more than 150 mV, wait for it to settle",
@@ -80,17 +81,17 @@ T("st",ST[s.state]||"");
 stored(s.storedMv,s.calibratedAt);
 var c=s.capture,r="";
 E("cap").disabled=c==="capturing";
-if(c==="capturing")r="Capturing "+s.samples+"/"+s.needed+" - hold still";
+if(c==="capturing"){requestNotice="";r="Capturing "+s.samples+"/"+s.needed+" - hold still";}
 else if(c==="accepted")r="Saved: "+s.medianMv+" mV (spread "+(n(s.spreadMv)?s.spreadMv.toFixed(0):"?")+" mV)";
 else if(c==="refused")r=s.reason==="implausible"?s.medianMv+" mV is not a clear-water reading (expected 2550-3580). Clean the probe windows, use clean water, check the wiring.":(RF[s.reason]||"Capture refused.");
-T("cr",r);}
+T("cr",requestNotice||r);}
 function poll(){
 fetch("/cal/status",{cache:"no-store"}).then(function(r){return r.json()}).then(function(s){
 render(s);setTimeout(poll,1000)}).catch(function(){setTimeout(poll,2000)});}
 E("cap").onclick=function(){
-E("cap").disabled=true;T("cr","Starting capture…");
+requestNotice="";E("cap").disabled=true;T("cr","Starting capture…");
 fetch("/cal/capture",{method:"POST"}).then(function(r){
-if(r.status===409)T("cr",MR.busy)}).catch(function(){T("cr","Could not reach the unit.")});};
+if(r.status===409){requestNotice=MR.busy;T("cr",requestNotice)}}).catch(function(){requestNotice="Could not reach the unit.";T("cr",requestNotice)});};
 E("save").onclick=function(){
 var v=E("mvin").value;
 fetch("/cal/set",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
