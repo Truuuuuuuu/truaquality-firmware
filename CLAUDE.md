@@ -140,6 +140,10 @@ be plugged into USB for a reflash, so those are entered from a phone instead and
     shorted-input measurement, or its buffer pairs may be refused `offset_out_of_window`. Every other PROVISIONAL
     window in `PhAcceptance.h` (noise floor, drift 3.0 mV, spread 25 mV, settle timeout 180 s, verdict bands) is
     to be replaced from 10-BENCH-RECORD §7/§13 once plans 10-07..10-12 run (deferred follow-up).
+  - **Provisional demo floor (2026-10-14):** user-authorized `MAX_NOISE_PH = 0.2` relaxes the former 0.1 pH
+    allowance. The assumed 1.0 mV noise floor still derives `MIN_SLOPE_MV_PER_PH = 5` (inclusive). This is a
+    demonstration relaxation, not measured accuracy; bench justification remains pending. Weak accepted pairs
+    retain **Replace**; sign, offset, capture, storage and health guards remain in effect.
   - **Known limit (save failure):** a validation refusal on Save keeps the previous calibration, but a failed NVS
     write in the middle of a save leaves the unit **uncalibrated**, not on its previous calibration, because
     `storePhCalibration` removes `ph_ver` first (the commit-marker design).
@@ -211,8 +215,8 @@ the PlatformIO IDE extension in VS Code.
 - Prove the bench consoles are absent from the shipping image (after building both environments):
   `strings .pio/build/nodemcu-32s/firmware.elf | grep -c 'ph-bench'` (and `'turbidity-bench'`) must print 0;
   the same greps on `.pio/build/nodemcu-32s-bench/firmware.elf` must be non-zero.
-- Host suites (no board needed): `pio test -e native` (expect **160/160**, measured after plan 11-07:
-  `test_ph_acceptance` 47, `test_turbidity_math` 51, `test_ph_math` 35, `test_wireformat` 27). It runs
+- Host suites (no board needed): `pio test -e native` (expect **162/162**, measured after quick 261014-iyc:
+  `test_ph_acceptance` 49, `test_turbidity_math` 51, `test_ph_math` 35, `test_wireformat` 27). It runs
   **four** suites, `test_wireformat`, `test_turbidity_math`, `test_ph_math` and `test_ph_acceptance`, because
   `[env:native]`'s `test_filter` lists all four by name. A native suite missing from that filter is skipped silently, so the run
   looks green while proving nothing about it. To run one suite: `pio test -e native -f test_ph_math`.

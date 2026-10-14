@@ -50,9 +50,10 @@ namespace ph
 
     // PROVISIONAL until 10-BENCH-RECORD §7: the largest per-buffer sensor-side noise sd seen in a steady cup.
     constexpr float NOISE_FLOOR_SENSOR_MV = 1.0f;
-    // D-06: a slope so shallow that the noise alone moves the reading by more than this is useless.
-    constexpr float MAX_NOISE_PH = 0.1f;
-    // Derived, never typed: the noise floor expressed as a slope (10 mV/pH with today's numbers).
+    // PROVISIONAL user-authorized mentor-demo relaxation (2026-10-14): allow 0.2 pH of the assumed
+    // 1 mV noise instead of D-06's former 0.1 pH. This is not measured accuracy; bench justification is pending.
+    constexpr float MAX_NOISE_PH = 0.2f;
+    // Derived, never typed: the assumed noise floor expressed as a slope (5 mV/pH with today's numbers).
     constexpr float MIN_SLOPE_MV_PER_PH = NOISE_FLOOR_SENSOR_MV / MAX_NOISE_PH;
 
     // PROVISIONAL until 10-BENCH-RECORD §2 (BNC-short multimeter) / §6 (shorted-BNC CSV): the board's zero-input
