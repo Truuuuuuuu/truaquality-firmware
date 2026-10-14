@@ -181,6 +181,32 @@ void test_offset_window_plus_side_boundary(void)
   TEST_ASSERT_FLOAT_WITHIN(0.01f, edge + 1.0f, r.reasonValue);
 }
 
+void test_demo_slope_floor_accepts_five_and_refuses_below(void)
+{
+  const Point a = heldPoint(700, 1740, 700);
+  const PairResult atFloor = ph::accept::evaluatePair(a, heldPoint(918, 1750, 900));
+  TEST_ASSERT_TRUE(atFloor.reason == Refusal::None);
+  TEST_ASSERT_TRUE(atFloor.complete);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 5.0f, atFloor.line.slopeMvPerPh);
+
+  const PairResult below = ph::accept::evaluatePair(a, heldPoint(918, 1749, 900));
+  TEST_ASSERT_TRUE(below.reason == Refusal::SlopeTooSmall);
+  TEST_ASSERT_FALSE(below.complete);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.5f, below.reasonValue);
+}
+
+void test_synthetic_weak_demo_pair_is_storage_valid_and_replace(void)
+{
+  // Synthetic regression, not a new hardware measurement: 27 mV over 5.15 pH is about 5.24 mV/pH.
+  const PairResult r = ph::accept::evaluatePair(heldPoint(401, 1737, 401, 27.6f),
+                                               heldPoint(918, 1764, 916, 27.6f));
+  TEST_ASSERT_TRUE(r.reason == Refusal::None);
+  TEST_ASSERT_TRUE(r.complete);
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.24f, r.line.slopeMvPerPh);
+  TEST_ASSERT_TRUE(r.verdict == Verdict::Replace);
+  TEST_ASSERT_TRUE(ph::isValidCalibration(r.cal));
+}
+
 void test_offset_window_minus_side_boundary(void)
 {
   const float edge = ph::accept::BOARD_ZERO_INPUT_SENSOR_MV - ph::accept::OFFSET_WINDOW_SENSOR_MV;
@@ -841,6 +867,8 @@ int main(int argc, char **argv)
   RUN_TEST(test_gap_boundary_is_inclusive_and_order_free);
   RUN_TEST(test_wrong_sign_and_equal_mv);
   RUN_TEST(test_slope_floor_is_inclusive);
+  RUN_TEST(test_demo_slope_floor_accepts_five_and_refuses_below);
+  RUN_TEST(test_synthetic_weak_demo_pair_is_storage_valid_and_replace);
   RUN_TEST(test_offset_window_plus_side_boundary);
   RUN_TEST(test_offset_window_minus_side_boundary);
   RUN_TEST(test_bench_probe_pair_is_accepted_with_replace_verdict);
