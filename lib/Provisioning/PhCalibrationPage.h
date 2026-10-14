@@ -39,7 +39,7 @@ select{width:100%;font-size:1.1rem;padding:10px;margin:6px 0;box-sizing:border-b
 #rv,#cl{margin-top:16px}
 </style></head><body><div class="w">
 <h2>Calibrate pH</h2>
-<p>Calibrate with 6.86 then 9.18 (brackets the 9.5 alkaline alert line). 4.01 is the spare verification buffer. Put the pH probe and the temperature probe together in the buffer cup, rinse both with clean water between buffers, and hold still while it reads.</p>
+<p>Calibrate with 6.86 then 9.18. 4.01 is the spare verification buffer. Put the pH probe and the temperature probe together in the buffer cup, rinse both with clean water between buffers, and hold still while it reads.</p>
 <div class="b">
 <div id="mv">Sensor: — mV</div>
 <div id="ph" class="d">pH: —</div>
@@ -116,7 +116,7 @@ function K(o){confirmOpen=o;H("cx",o);H("cf",!o)}
 function render(s){
 if(n(s.overdueDays))od=s.overdueDays;
 T("mv","Sensor: "+(n(s.mv)?Math.round(s.mv):D)+" mV");
-T("ph",n(s.ph)?"pH: "+s.ph.toFixed(2):"pH: uncalibrated");
+T("ph",n(s.ph)?"pH: "+s.ph.toFixed(2):s.calibrated===true?"pH: unavailable":"pH: uncalibrated");
 T("tc","Temperature: "+f(s.tempC,1)+C);
 T("st",s.state=="settling"?"Settling…"+(n(s.driftMv)?" (drift "+s.driftMv.toFixed(1)+" mV)":""):ST[s.state]||"");
 sto(s.stored);K(confirmOpen);
