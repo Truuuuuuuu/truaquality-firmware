@@ -21,14 +21,33 @@ static void test_anchor_at_all_temperatures()
   }
 }
 
-static void test_live_voltage_uses_saved_slope()
+static void test_one_saved_slope_changes_demo_ph_by_one_tenth()
 {
   const ph::Line line = ph::fit(CAL);
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 8.5f, ph::phFromSensorMv(1819.0f + line.slopeMvPerPh, line, 25.0f));
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 6.5f, ph::phFromSensorMv(1819.0f - line.slopeMvPerPh, line, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.6f, ph::phFromSensorMv(1819.0f + line.slopeMvPerPh, line, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.4f, ph::phFromSensorMv(1819.0f - line.slopeMvPerPh, line, 25.0f));
+}
+
+static void test_ten_saved_slopes_change_demo_ph_by_one()
+{
+  const ph::Line line = ph::fit(CAL);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 8.5f, ph::phFromSensorMv(1819.0f + 10 * line.slopeMvPerPh, line, 25.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 6.5f, ph::phFromSensorMv(1819.0f - 10 * line.slopeMvPerPh, line, 25.0f));
+}
+
+static void test_temperature_compensation_and_fallback_keep_reduced_sensitivity()
+{
+  const ph::Line line = ph::fit(CAL);
   const float warmStep = line.slopeMvPerPh * (308.15f / 298.15f);
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 8.5f, ph::phFromSensorMv(1819.0f + warmStep, line, 35.0f));
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 8.5f, ph::phFromSensorMv(1819.0f + line.slopeMvPerPh, line, NAN));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.6f, ph::phFromSensorMv(1819.0f + warmStep, line, 35.0f));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.6f, ph::phFromSensorMv(1819.0f + line.slopeMvPerPh, line, NAN));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.4f, ph::phFromSensorMv(1819.0f - line.slopeMvPerPh, line, INFINITY));
+}
+
+static void test_179x_sensor_mv_demo_values()
+{
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.09f, ph::phFromBurst(burst(1790.0f), CAL, 25));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.21f, ph::phFromBurst(burst(1799.0f), CAL, 25));
 }
 
 static void test_faults_still_suppress_values()
@@ -44,7 +63,9 @@ static void test_faults_still_suppress_values()
 
 static void test_range_rejection_and_rounding()
 {
-  const float slope = ph::fit(CAL).slopeMvPerPh;
+  const float slope = 10 * ph::fit(CAL).slopeMvPerPh;
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 2.0f, ph::phFromBurst(burst(1819 - 5.5f * slope), CAL, 25));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 12.0f, ph::phFromBurst(burst(1819 + 4.5f * slope), CAL, 25));
   TEST_ASSERT_TRUE(std::isnan(ph::phFromBurst(burst(1819 + 5 * slope), CAL, 25)));
   TEST_ASSERT_TRUE(std::isnan(ph::phFromBurst(burst(1819 - 6 * slope), CAL, 25)));
   TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.62f, ph::phFromBurst(burst(1819 + 0.123f * slope), CAL, 25));
@@ -54,7 +75,10 @@ int main()
 {
   UNITY_BEGIN();
   RUN_TEST(test_anchor_at_all_temperatures);
-  RUN_TEST(test_live_voltage_uses_saved_slope);
+  RUN_TEST(test_one_saved_slope_changes_demo_ph_by_one_tenth);
+  RUN_TEST(test_ten_saved_slopes_change_demo_ph_by_one);
+  RUN_TEST(test_temperature_compensation_and_fallback_keep_reduced_sensitivity);
+  RUN_TEST(test_179x_sensor_mv_demo_values);
   RUN_TEST(test_faults_still_suppress_values);
   RUN_TEST(test_range_rejection_and_rounding);
   return UNITY_END();
