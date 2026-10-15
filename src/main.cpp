@@ -19,7 +19,11 @@
 // units can. Per D-01 the bump and the vectors land together: the 0.7.0 pH vectors were already signed in Phase 9
 // and test_wireformat keeps its own version constants, so this change proves sync with
 // `node scripts/sync-golden-vectors.mjs --check` (regenerate from the backend only on drift, never hand-edit).
+#if PH_DEMO_ANCHOR
+static const char *FIRMWARE_VERSION = "0.7.0-ph-demo";
+#else
 static const char *FIRMWARE_VERSION = "0.7.0";
+#endif
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 static const unsigned long NTP_RETRY_INTERVAL_MS = 1000;
 static const unsigned long NTP_WAIT_LOG_INTERVAL_MS = 10000;
@@ -769,6 +773,9 @@ static float pollTemperatureC()
 void setup()
 {
   Serial.begin(115200);
+#if PH_DEMO_ANCHOR
+  Serial.println("[ph-demo] synthetic anchor: 1819 sensor mV = pH 7.5; not verified calibration");
+#endif
   sensors::begin();
   provisioning::begin(provisioning::Config{
       SETUP_AP_PASSWORD,

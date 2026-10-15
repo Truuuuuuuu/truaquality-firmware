@@ -315,7 +315,13 @@ namespace ph
   {
     const float t = std::isfinite(tempC) ? tempC : l.tcalC;
     const float slopeAtT = l.slopeMvPerPh * ((t + KELVIN_OFFSET) / (l.tcalC + KELVIN_OFFSET));
+#if PH_DEMO_ANCHOR
+    // Synthetic demonstration offset only. Keep the measured voltage and stored slope live; never rewrite
+    // the fitted calibration or relax classify()'s signal, calibration and plausibility guards.
+    return 7.5f + (sensorMv - 1819.0f) / slopeAtT;
+#else
     return ISOPOTENTIAL_PH + (sensorMv - l.mvAtIsopotential) / slopeAtT;
+#endif
   }
 
   // Divide (not multiply by 0.01) so the result is the float nearest k/100. NAN stays the "no reading" marker.
