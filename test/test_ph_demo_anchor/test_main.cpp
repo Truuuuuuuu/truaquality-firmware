@@ -64,8 +64,10 @@ static void test_faults_still_suppress_values()
 static void test_range_rejection_and_rounding()
 {
   const float slope = 10 * ph::fit(CAL).slopeMvPerPh;
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 2.0f, ph::phFromBurst(burst(1819 - 5.5f * slope), CAL, 25));
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 12.0f, ph::phFromBurst(burst(1819 + 4.5f * slope), CAL, 25));
+  // An exactly representable slope keeps float reconstruction of the boundary from landing just outside it.
+  const ph::Calibration boundaryCal = {1700, 400, 1750, 900, 2500, 0, ph::PH_CAL_VERSION};
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 2.0f, ph::phFromBurst(burst(1269), boundaryCal, 25));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 12.0f, ph::phFromBurst(burst(2269), boundaryCal, 25));
   TEST_ASSERT_TRUE(std::isnan(ph::phFromBurst(burst(1819 + 5 * slope), CAL, 25)));
   TEST_ASSERT_TRUE(std::isnan(ph::phFromBurst(burst(1819 - 6 * slope), CAL, 25)));
   TEST_ASSERT_FLOAT_WITHIN(0.0001f, 7.62f, ph::phFromBurst(burst(1819 + 0.123f * slope), CAL, 25));

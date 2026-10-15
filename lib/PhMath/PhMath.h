@@ -316,9 +316,10 @@ namespace ph
     const float t = std::isfinite(tempC) ? tempC : l.tcalC;
     const float slopeAtT = l.slopeMvPerPh * ((t + KELVIN_OFFSET) / (l.tcalC + KELVIN_OFFSET));
 #if PH_DEMO_ANCHOR
-    // Synthetic demonstration offset only. Keep the measured voltage and stored slope live; never rewrite
-    // the fitted calibration or relax classify()'s signal, calibration and plausibility guards.
-    return 7.5f + (sensorMv - 1819.0f) / slopeAtT;
+    // Synthetic demonstration anchor and slope scaling only. Measured voltage and stored calibration stay
+    // unchanged; never relax classify()'s signal, calibration and plausibility guards.
+    constexpr float DEMO_SENSITIVITY_FACTOR = 10.0f;
+    return 7.5f + (sensorMv - 1819.0f) / (slopeAtT * DEMO_SENSITIVITY_FACTOR);
 #else
     return ISOPOTENTIAL_PH + (sensorMv - l.mvAtIsopotential) / slopeAtT;
 #endif

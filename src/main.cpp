@@ -774,7 +774,7 @@ void setup()
 {
   Serial.begin(115200);
 #if PH_DEMO_ANCHOR
-  Serial.println("[ph-demo] synthetic anchor: 1819 sensor mV = pH 7.5; not verified calibration");
+  Serial.println("[ph-demo] synthetic anchor: 1819 sensor mV = pH 7.5; 10x lower sensitivity; not verified calibration");
 #endif
   sensors::begin();
   provisioning::begin(provisioning::Config{
